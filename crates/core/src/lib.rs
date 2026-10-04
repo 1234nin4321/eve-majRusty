@@ -10,3 +10,5 @@ pub mod virtual_keys;
 pub mod display_grid;
 pub mod config;
 pub mod http_client;
+pub mod paste_upload;
+pub mod ultra_potato;
