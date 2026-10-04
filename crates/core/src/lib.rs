@@ -11,3 +11,4 @@ pub mod display_grid;
 pub mod config;
 pub mod http_client;
 pub mod activity_tracker;
+pub mod protocol;
