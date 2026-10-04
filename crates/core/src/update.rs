@@ -17,7 +17,7 @@ const SLOG_STAGE: Scope = Scope::new("update_stage");
 
 macro_rules! repo {
     () => {
-        "1234nin4321/EveMajImproved"
+        "1234nin4321/eve-majRusty"
     };
 }
 
