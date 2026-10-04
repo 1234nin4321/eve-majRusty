@@ -286,17 +286,39 @@ pub fn main() {
     std::panic::set_hook(Box::new(move |info| {
         log::write_crash_line(format_args!("PANIC: {info}"));
         default_hook(info);
+        show_error_box(&format!("EVE-Maj Preview crashed:\n\n{info}"));
     }));
 
     let code = match main_impl() {
         Ok(()) => 0,
+        // A second launch, or a protocol link with nothing running to receive it: quiet, as in the Zig build.
+        Err(err @ (FatalError::AlreadyRunning | FatalError::NoExistingInstance)) => {
+            SLOG.info(format_args!("Exiting: {err}"));
+            1
+        }
         Err(err) => {
             SLOG.err(format_args!("Fatal error: {err}"));
+            show_error_box(&format!("EVE-Maj Preview could not start:\n\n{err}"));
             1
         }
     };
     log::deinit_file();
     std::process::exit(code);
+}
+
+/// A Windows-subsystem build has no console, so without this a startup failure or crash would just look like the app
+/// never opened. Shown from its own thread so the modal loop can't pump (and re-enter) this thread's windows.
+fn show_error_box(text: &str) {
+    let log_path = std::env::current_dir().map(|d| d.join(log::LOG_FILE_NAME).display().to_string()).unwrap_or_else(|_| log::LOG_FILE_NAME.to_owned());
+    let body = wide(&format!("{text}\n\nDetails are in {log_path}"));
+    let title = wide("EVE-Maj Preview");
+    let shown = std::thread::spawn(move || unsafe {
+        MessageBoxW(std::ptr::null_mut(), body.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR | MB_TOPMOST | MB_SETFOREGROUND);
+    })
+    .join();
+    if shown.is_err() {
+        log::write_crash_line(format_args!("Failed to show the error message box"));
+    }
 }
 
 /// Run-key startup entries launch with an arbitrary working directory, not the exe's folder.

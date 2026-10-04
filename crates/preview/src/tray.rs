@@ -336,6 +336,20 @@ fn open_config_dialog() {
         return;
     };
     let config_exe = exe_dir.join("config.exe");
+    // The Rust build doesn't ship its own config.exe yet, so a missing one is the common case; say what to do instead of failing silently.
+    if !config_exe.exists() {
+        SLOG.err(format_args!("config.exe not found at {}", config_exe.display()));
+        let body = wide(&format!(
+            "config.exe was not found next to eve-maj-preview.exe:\n{}\n\nThis Rust build doesn't include its own settings window yet. Copy config.exe and WebView2Loader.dll from your existing EVE-Maj Preview install into this folder; they work with this build.",
+            config_exe.display()
+        ));
+        let title = wide("EVE-Maj Preview");
+        // Own thread, so the modal box neither blocks nor re-enters the tray's message loop.
+        std::thread::spawn(move || unsafe {
+            MessageBoxW(std::ptr::null_mut(), body.as_ptr(), title.as_ptr(), MB_OK | MB_ICONINFORMATION | MB_TOPMOST | MB_SETFOREGROUND);
+        });
+        return;
+    }
     SLOG.info(format_args!("Launching configuration dialog: {}", config_exe.display()));
     if !shell::shell_open(&config_exe.to_string_lossy(), Some(&exe_dir.to_string_lossy())) {
         SLOG.err(format_args!("Failed to launch config.exe"));
