@@ -5,7 +5,7 @@ members = ["crates/core", "crates/win", "crates/app", "crates/preview"]
 [workspace.package]
 version = "1.6.1"
 edition = "2021"
-license-file = "../LICENSE"
+license-file = "LICENSE"
 
 [profile.release]
 opt-level = 3

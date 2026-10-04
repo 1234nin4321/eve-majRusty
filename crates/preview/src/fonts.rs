@@ -12,9 +12,9 @@ struct BundledFont {
 
 // SemiBold is a separate face because GDI won't embolden Cascadia Code's variable-font weights (see region_select).
 const BUNDLED_FONTS: [BundledFont; 3] = [
-    BundledFont { name: "Cascadia Code", data: include_bytes!("../../../../src/assets/fonts/CascadiaCode-Regular.ttf") },
-    BundledFont { name: "Cascadia Code SemiBold", data: include_bytes!("../../../../src/assets/fonts/CascadiaCode-SemiBold.ttf") },
-    BundledFont { name: "Cascadia Mono", data: include_bytes!("../../../../src/assets/fonts/CascadiaMono-Regular.ttf") },
+    BundledFont { name: "Cascadia Code", data: include_bytes!("../../../assets/fonts/CascadiaCode-Regular.ttf") },
+    BundledFont { name: "Cascadia Code SemiBold", data: include_bytes!("../../../assets/fonts/CascadiaCode-SemiBold.ttf") },
+    BundledFont { name: "Cascadia Mono", data: include_bytes!("../../../assets/fonts/CascadiaMono-Regular.ttf") },
 ];
 
 /// Registers the bundled fonts for this process only, since not every Windows install ships Cascadia; fonts are released when the process exits.
