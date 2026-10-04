@@ -4,3 +4,4 @@
 #[cfg(windows)]
 pub mod protocol;
 pub mod sound;
+pub mod tts;
