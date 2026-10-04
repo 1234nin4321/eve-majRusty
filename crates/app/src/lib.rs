@@ -8,3 +8,4 @@ pub mod tts;
 pub mod update_stage;
 #[cfg(windows)]
 pub mod updater;
+pub mod paste_upload;

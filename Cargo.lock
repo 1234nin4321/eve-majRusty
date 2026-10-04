@@ -179,6 +179,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "ureq",
+ "url",
  "windows-sys 0.59.0",
 ]
 

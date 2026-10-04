@@ -16,3 +16,5 @@ pub mod accounts_store;
 pub mod eve_accounts;
 pub mod esi_prices;
 pub mod update;
+pub mod paste_upload;
+pub mod ultra_potato;
