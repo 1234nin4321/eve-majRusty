@@ -342,6 +342,11 @@ impl GlobalSettings {
         lock(&self.character_id_map).get(character_name).cloned()
     }
 
+    /// A copy of the whole character name -> ID map.
+    pub fn character_id_map_snapshot(&self) -> BTreeMap<String, String> {
+        lock(&self.character_id_map).clone()
+    }
+
     /// Profile file names in the profiles directory (global.settings.json excluded), in directory order.
     pub fn enumerate_profiles() -> Result<Vec<String>, ConfigError> {
         let dir = match std::fs::read_dir(PROFILES_DIR) {
