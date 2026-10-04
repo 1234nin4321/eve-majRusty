@@ -15,3 +15,4 @@ pub mod protocol;
 pub mod accounts_store;
 pub mod eve_accounts;
 pub mod esi_prices;
+pub mod update;

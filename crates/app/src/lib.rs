@@ -5,3 +5,6 @@
 pub mod protocol;
 pub mod sound;
 pub mod tts;
+pub mod update_stage;
+#[cfg(windows)]
+pub mod updater;
