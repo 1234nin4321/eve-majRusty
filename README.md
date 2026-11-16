@@ -10,8 +10,8 @@ existing install's settings carry over.
 >   is ported; hotkeys, chatlog monitoring and its overlays, the client list and history panels, region selection and
 >   `config.exe` are not yet.
 > - **Linux (Hyprland):** thumbnails, layouts, hotkeys and groups, minimize/close all, auto-move, tray, `evemajpreview://`
->   links, and chat-log monitoring (system names, notifications, sounds, Travel Mode) work; the activity overlays,
->   panels, region selection and the config dialog are not yet. See [Linux (Hyprland)](#linux-hyprland).
+>   links, chat-log monitoring (system names, notifications, sounds, Travel Mode) and the activity overlays (DPS,
+>   mining, bounty, CPU/RAM) work; the panels, region selection and the config dialog are not yet. See [Linux (Hyprland)](#linux-hyprland).
 >
 > Unported settings still load and save, and log a warning when enabled.
 
@@ -75,13 +75,16 @@ cargo linux                                                    # = build --relea
   full, jumps, ...) and Travel Mode's left-behind alert, from EVE's chat and game logs. When `chatlogDir`/`gamelogDir`
   don't exist, the logs are found in the running client's Wine prefix (`WINEPREFIX`, or Proton's
   `STEAM_COMPAT_DATA_PATH/pfx`) under `drive_c/users/*/Documents/EVE/logs`.
+- **Activity overlays** (`combat`, `mining`, `bounty`, `resources` sections): incoming/outgoing DPS, mining m3 and
+  ISK rates, bounty ISK rate (all from the game log, so they need chat-log monitoring on) and each client's CPU/RAM
+  (from `/proc`; VRAM isn't available on Linux), with the Taking damage, Laser idle and Mining stopped alerts.
 - **Notification sounds** play through `ffplay`, `mpv`, `pw-play` or `paplay` (WAV/MP3; Windows `C:\...` paths from a
   copied profile are skipped); **spoken alerts** use `spd-say` (speech-dispatcher) or `espeak-ng`.
 - Optional `hyprland.conf` rule: `layerrule = noanim, eve-maj-preview`.
 - Thumbnail refresh rate is `--fps` (default 30): unlike DWM, every refresh is a GPU copy done by Hyprland, so lower it
   if you run many clients.
 
-Not on Linux yet: the activity overlays (DPS, mining, bounty), the list/history panels, region selection and the config
+Not on Linux yet: the list/history panels, region selection and the config
 dialog.
 
 ## License

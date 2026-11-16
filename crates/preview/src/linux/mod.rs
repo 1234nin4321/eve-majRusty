@@ -10,6 +10,7 @@
 //!
 //! Layout, styling and snapping decisions live in eve-maj-core (`layout`, `render`) and match the Windows painter.
 
+mod activity;
 mod alerts;
 mod backend;
 mod capture;
@@ -234,6 +235,7 @@ fn run() -> Result<(), String> {
         tray: None,
         exit_requested: false,
         chatlog: None,
+        trackers: activity::Trackers::default(),
         chatlog_warned: false,
     };
     app.tray = tray::Tray::spawn(app.tray_state());
@@ -374,6 +376,7 @@ struct App {
     tray: Option<tray::Tray>,
     exit_requested: bool,
     chatlog: Option<notify::Chatlog>,
+    trackers: activity::Trackers,
     /// The "logs not found" warning was logged (once per run).
     chatlog_warned: bool,
 }
@@ -528,6 +531,7 @@ impl App {
         self.check_auto_minimize();
         self.verify_pending_moves();
         self.check_travel_left_behind();
+        self.update_activity();
         self.render_dirty();
         if self.tick % 5 == 0 {
             self.refresh_tray();
