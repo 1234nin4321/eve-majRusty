@@ -64,11 +64,17 @@ cargo linux                                                    # = build --relea
   toggles, restore positions, suspend hotkeys, close all, exit.
 - **`evemajpreview://` links** work like on Windows: the app registers itself as the handler (`autoRegisterProtocol`),
   and a second start with a link (`eve-maj-preview --protocol URL`, or `xdg-open URL`) forwards it to the running instance.
+- **Chat-log monitoring** (`chatlog.enabled`): system names, notifications (fleet invites, scrams, decloaks, cargo
+  full, jumps, ...) and Travel Mode's left-behind alert, from EVE's chat and game logs. When `chatlogDir`/`gamelogDir`
+  don't exist, the logs are found in the running client's Wine prefix (`WINEPREFIX`, or Proton's
+  `STEAM_COMPAT_DATA_PATH/pfx`) under `drive_c/users/*/Documents/EVE/logs`.
+- **Notification sounds** play through `ffplay`, `mpv`, `pw-play` or `paplay` (WAV/MP3; Windows `C:\...` paths from a
+  copied profile are skipped); **spoken alerts** use `spd-say` (speech-dispatcher) or `espeak-ng`.
 - Optional `hyprland.conf` rule: `layerrule = noanim, eve-maj-preview`.
 - Thumbnail refresh rate is `--fps` (default 30): unlike DWM, every refresh is a GPU copy done by Hyprland, so lower it
   if you run many clients.
 
-Not on Linux yet: chatlog-driven notifications and overlays, the list/history panels, region selection and the config
+Not on Linux yet: the activity overlays (DPS, mining, bounty), the list/history panels, region selection and the config
 dialog.
 
 ## License

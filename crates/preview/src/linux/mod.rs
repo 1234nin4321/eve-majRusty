@@ -10,11 +10,13 @@
 //!
 //! Layout, styling and snapping decisions live in eve-maj-core (`layout`, `render`) and match the Windows painter.
 
+mod alerts;
 mod backend;
 mod capture;
 mod control;
 mod gpu;
 mod ipc;
+mod notify;
 mod overlay;
 mod protocols;
 mod tray;
@@ -231,6 +233,8 @@ fn run() -> Result<(), String> {
         ipc: Some(listener),
         tray: None,
         exit_requested: false,
+        chatlog: None,
+        chatlog_warned: false,
     };
     app.tray = tray::Tray::spawn(app.tray_state());
     queue.roundtrip(&mut app).map_err(|e| format!("roundtrip: {e}"))?;
@@ -292,6 +296,15 @@ struct Thumb {
     inactive_since: u64,
     /// When this client went back to the login screen (not-logged-in cycling order).
     logged_out_at: u64,
+    /// In-game time (YYYYMMDDhhmmss) of the line system_name came from; 0 for live updates.
+    system_name_event_ts: u64,
+    /// When this character last jumped (Travel Mode), and whether its left-behind alert has fired since.
+    last_jump_ms: u64,
+    travel_alert_fired: bool,
+    /// Last thumbnail click (suppressWhenClicked).
+    last_click_ms: u64,
+    /// Last notification of each type (throttleMs), indexed by NotificationType::index().
+    last_notified_by_type: Vec<u64>,
 }
 
 #[derive(Default)]
@@ -360,6 +373,9 @@ struct App {
     ipc: Option<ipc::Listener>,
     tray: Option<tray::Tray>,
     exit_requested: bool,
+    chatlog: Option<notify::Chatlog>,
+    /// The "logs not found" warning was logged (once per run).
+    chatlog_warned: bool,
 }
 
 fn timerfd(interval_ms: u64) -> i32 {
@@ -418,6 +434,7 @@ impl App {
             let wm_slot = slot(self.wm.event_fd());
             let ipc_slot = slot(self.ipc.as_ref().map(|l| l.fd()));
             let tray_slot = slot(self.tray.as_ref().map(|t| t.fd()));
+            let chatlog_slot = slot(self.chatlog.as_ref().map(|c| c.fd()));
             let r = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
             if r < 0 {
                 drop(guard);
@@ -459,6 +476,9 @@ impl App {
                     self.on_protocol_url(&url);
                 }
             }
+            if ready(chatlog_slot) {
+                self.on_chatlog_ready();
+            }
             if ready(tray_slot) {
                 let commands = self.tray.as_ref().map(|t| t.drain()).unwrap_or_default();
                 for cmd in commands {
@@ -468,6 +488,7 @@ impl App {
             if fds[3].revents & libc::POLLIN != 0 || self.exit_requested {
                 SLOG.info(format_args!("Shutting down"));
                 self.unregister_hotkeys();
+                self.chatlog = None;
                 if let Some(t) = self.tray.take() {
                     t.shutdown();
                 }
@@ -506,6 +527,7 @@ impl App {
         self.apply_hide_when_no_eve_focus();
         self.check_auto_minimize();
         self.verify_pending_moves();
+        self.check_travel_left_behind();
         self.render_dirty();
         if self.tick % 5 == 0 {
             self.refresh_tray();
@@ -572,6 +594,8 @@ impl App {
             self.reflow();
         }
         self.reconcile_states();
+        self.ensure_chatlog();
+        self.sync_chatlog_characters();
     }
 
     fn refresh_character_caches(&mut self, i: usize) {
@@ -612,6 +636,9 @@ impl App {
             t.system_color = self.config.thumbnail.system_name_color;
             t.notifications.clear();
             t.logged_out_at = now_ms();
+            t.system_name_event_ts = 0;
+            t.last_jump_ms = 0;
+            t.travel_alert_fired = false;
         }
         if was_generic && !now_generic {
             // Exclusion is per character, so it comes back with the login; same for the auto-move-on-login setting.
@@ -706,6 +733,11 @@ impl App {
             needs_draw: false,
             inactive_since: now_ms(),
             logged_out_at: now_ms(),
+            system_name_event_ts: 0,
+            last_jump_ms: 0,
+            travel_alert_fired: false,
+            last_click_ms: 0,
+            last_notified_by_type: vec![0; eve_maj_core::types::NotificationType::COUNT],
         });
         let i = self.thumbs.len() - 1;
         self.thumbs[i].excluded = self.hotkeys.is_character_excluded(&self.config, &w.character_name);
@@ -1040,6 +1072,7 @@ impl App {
             self.render_dirty();
             return;
         }
+        self.thumbs[i].last_click_ms = now_ms();
         let window = self.thumbs[i].window;
         self.activate_window(window);
     }

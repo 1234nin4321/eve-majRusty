@@ -509,6 +509,8 @@ impl App {
         }
         self.reflow();
         self.register_hotkeys();
+        // Restarts or stops chat-log monitoring if its settings changed.
+        self.ensure_chatlog();
         self.scan_needed = true;
     }
 }
