@@ -925,17 +925,17 @@ mod tests {
 
     #[test]
     fn file_names_parse() {
-        assert_eq!(parse_log_timestamp("Local_20261116_190330_92579606.txt", true), 20261116190330);
-        assert_eq!(parse_log_timestamp("20261116_190330_92579606.txt", false), 20261116190330);
+        assert_eq!(parse_log_timestamp("Local_20261116_190330_90000001.txt", true), 20261116190330);
+        assert_eq!(parse_log_timestamp("20261116_190330_90000001.txt", false), 20261116190330);
         assert_eq!(parse_log_timestamp("20261116_190314.txt", false), 20261116190314);
-        assert_eq!(parse_log_timestamp("Corp_20261116_190330_92579606.txt", true), 0);
-        assert_eq!(extract_character_id("Local_20261116_190330_92579606.txt"), Some("92579606"));
+        assert_eq!(parse_log_timestamp("Corp_20261116_190330_90000001.txt", true), 0);
+        assert_eq!(extract_character_id("Local_20261116_190330_90000001.txt"), Some("90000001"));
         assert_eq!(extract_character_id("20261116_190314.txt"), None);
     }
 
     #[test]
     fn systems_parse() {
-        assert_eq!(parse_system_change_from_chat("[ 2026.11.16 07:00:23 ] EVE System > Channel changed to Local : C-N4OD").as_deref(), Some("C-N4OD"));
+        assert_eq!(parse_system_change_from_chat("[ 2026.11.16 07:00:23 ] EVE System > Channel changed to Local : ZZ-9TST").as_deref(), Some("ZZ-9TST"));
         assert_eq!(parse_jump("[ 2026.11.16 07:00:23 ] (None) Jumping from Jita to Perimeter.").as_deref(), Some("Perimeter"));
         assert_eq!(parse_jump("[ 2026.11.16 07:00:23 ] Jumping from Jita to Perimeter").as_deref(), Some("Perimeter"));
         assert_eq!(parse_undock("[ ts ] Undocking from Jita IV - Moon 4 in Jita").as_deref(), Some("Jita"));
@@ -967,13 +967,13 @@ mod tests {
         let mut events = Vec::new();
         let trackers = ActivityTrackers::default();
         let mut sink = Sink { events: &mut events, trackers: &trackers };
-        let mut game = LogFile { character: "Alaheem Jihad".into(), multiplier: 1, ..Default::default() };
-        game.process(b"[ 2026.11.16 20:01:37 ] (None) Jumping from C-N4OD to KVN-36\r\n[ 2026.11.16 20:02:47 ] (None) Jumping from KVN-36 to C-N4OD\r\n", &mut sink);
-        let mut chat = LogFile { character: "Alaheem Jihad".into(), is_chatlog: true, multiplier: 1, ..Default::default() };
-        chat.process("\u{FEFF}[ 2026.11.16 20:01:41 ] EVE System > Channel changed to Local : KVN-36\r\n".as_bytes(), &mut sink);
-        let system = |s: &str, jump| ChatlogEvent::System { character: "Alaheem Jihad".into(), system: s.into(), event_ts: 0, is_jump: jump };
-        let jumped = |s: &str| ChatlogEvent::Notification { character: "Alaheem Jihad".into(), text: format!("Jumped to {s}"), ntype: NotificationType::SystemChange };
-        assert_eq!(events, vec![jumped("KVN-36"), system("KVN-36", true), jumped("C-N4OD"), system("C-N4OD", true), system("KVN-36", false)]);
+        let mut game = LogFile { character: "Some Pilot".into(), multiplier: 1, ..Default::default() };
+        game.process(b"[ 2026.11.16 20:01:37 ] (None) Jumping from ZZ-9TST to TST-01\r\n[ 2026.11.16 20:02:47 ] (None) Jumping from TST-01 to ZZ-9TST\r\n", &mut sink);
+        let mut chat = LogFile { character: "Some Pilot".into(), is_chatlog: true, multiplier: 1, ..Default::default() };
+        chat.process("\u{FEFF}[ 2026.11.16 20:01:41 ] EVE System > Channel changed to Local : TST-01\r\n".as_bytes(), &mut sink);
+        let system = |s: &str, jump| ChatlogEvent::System { character: "Some Pilot".into(), system: s.into(), event_ts: 0, is_jump: jump };
+        let jumped = |s: &str| ChatlogEvent::Notification { character: "Some Pilot".into(), text: format!("Jumped to {s}"), ntype: NotificationType::SystemChange };
+        assert_eq!(events, vec![jumped("TST-01"), system("TST-01", true), jumped("ZZ-9TST"), system("ZZ-9TST", true), system("TST-01", false)]);
     }
 
     #[test]
@@ -1019,30 +1019,30 @@ mod tests {
         let header = |name: &str| format!("------\r\n  Channel ID: local\r\n  Listener:        {name}\r\n------\r\n\r\n");
         std::fs::write(chat.join("Local_20261116_070000_11111111.txt"), utf16(&(header("Other Pilot") + "[ 2026.11.16 07:00:00 ] EVE System > Channel changed to Local : Nope\r\n"))).unwrap();
         let mine = chat.join("Local_20261116_080000_22222222.txt");
-        std::fs::write(&mine, utf16(&(header("Alaheem Jihad") + "[ 2026.11.16 08:00:01 ] EVE System > Channel changed to Local : C-N4OD\r\n"))).unwrap();
+        std::fs::write(&mine, utf16(&(header("Some Pilot") + "[ 2026.11.16 08:00:01 ] EVE System > Channel changed to Local : ZZ-9TST\r\n"))).unwrap();
         let gamelog = game.join("20261116_080000_22222222.txt");
-        std::fs::write(&gamelog, "------\r\n  Gamelog\r\n  Listener: Alaheem Jihad\r\n------\r\n").unwrap();
+        std::fs::write(&gamelog, "------\r\n  Gamelog\r\n  Listener: Some Pilot\r\n------\r\n").unwrap();
 
         let mut m = ChatlogMonitor::new(&chat, &game, 5, 2, BTreeMap::new());
-        m.add_character("Alaheem Jihad");
+        m.add_character("Some Pilot");
         m.add_character("EVE");
         let events = m.take_events();
-        assert!(events.contains(&ChatlogEvent::CharacterId { character: "Alaheem Jihad".into(), id: "22222222".into() }));
-        assert!(events.contains(&ChatlogEvent::System { character: "Alaheem Jihad".into(), system: "C-N4OD".into(), event_ts: 20261116080001, is_jump: false }));
+        assert!(events.contains(&ChatlogEvent::CharacterId { character: "Some Pilot".into(), id: "22222222".into() }));
+        assert!(events.contains(&ChatlogEvent::System { character: "Some Pilot".into(), system: "ZZ-9TST".into(), event_ts: 20261116080001, is_jump: false }));
         assert_eq!(m.files.len(), 2);
 
         // Appended lines, one of them split across two writes.
         let mut f = std::fs::OpenOptions::new().append(true).open(&gamelog).unwrap();
-        f.write_all(b"[ 2026.11.16 08:01:00 ] (None) Jumping from C-N4OD to 1DQ1-A.\r\n[ 2026.11.16 08:01:05 ] (notify) Your fleet is dis").unwrap();
+        f.write_all(b"[ 2026.11.16 08:01:00 ] (None) Jumping from ZZ-9TST to 1DQ1-A.\r\n[ 2026.11.16 08:01:05 ] (notify) Your fleet is dis").unwrap();
         m.poll();
         f.write_all(b"banding\r\n").unwrap();
         drop(f);
         // Same size check needs a changed size/mtime, which the append gives.
         m.poll();
         let events = m.take_events();
-        assert!(events.contains(&ChatlogEvent::Notification { character: "Alaheem Jihad".into(), text: "Jumped to 1DQ1-A".into(), ntype: NotificationType::SystemChange }));
-        assert!(events.contains(&ChatlogEvent::System { character: "Alaheem Jihad".into(), system: "1DQ1-A".into(), event_ts: 0, is_jump: true }));
-        assert!(events.contains(&ChatlogEvent::Notification { character: "Alaheem Jihad".into(), text: "Fleet disbanding".into(), ntype: NotificationType::FleetDisband }));
+        assert!(events.contains(&ChatlogEvent::Notification { character: "Some Pilot".into(), text: "Jumped to 1DQ1-A".into(), ntype: NotificationType::SystemChange }));
+        assert!(events.contains(&ChatlogEvent::System { character: "Some Pilot".into(), system: "1DQ1-A".into(), event_ts: 0, is_jump: true }));
+        assert!(events.contains(&ChatlogEvent::Notification { character: "Some Pilot".into(), text: "Fleet disbanding".into(), ntype: NotificationType::FleetDisband }));
 
         // A player faking the system announcement is ignored; the real one comes through.
         let mut f = std::fs::OpenOptions::new().append(true).open(&mine).unwrap();
@@ -1054,19 +1054,19 @@ mod tests {
         drop(f);
         m.poll();
         // 1DQ1-A is new for the chat log's own dedup, so it's reported (the front end ignores the repeat).
-        assert_eq!(m.take_events(), vec![ChatlogEvent::System { character: "Alaheem Jihad".into(), system: "1DQ1-A".into(), event_ts: 0, is_jump: false }]);
+        assert_eq!(m.take_events(), vec![ChatlogEvent::System { character: "Some Pilot".into(), system: "1DQ1-A".into(), event_ts: 0, is_jump: false }]);
 
         // A newer game log (relog) replaces the old one once the directory changes.
         std::thread::sleep(Duration::from_millis(20));
-        std::fs::write(game.join("20261116_090000_22222222.txt"), "------\r\n  Listener: Alaheem Jihad\r\n------\r\n[ 2026.11.16 09:00:00 ] (None) Undocking from Station to Jita solar system.\r\n").unwrap();
+        std::fs::write(game.join("20261116_090000_22222222.txt"), "------\r\n  Listener: Some Pilot\r\n------\r\n[ 2026.11.16 09:00:00 ] (None) Undocking from Station to Jita solar system.\r\n").unwrap();
         // Directory mtime resolution can be coarse; force the rescan.
         m.dir_mtimes = [None, None];
         m.poll();
         assert!(m.files.iter().any(|f| f.path.ends_with("20261116_090000_22222222.txt")));
         assert_eq!(m.files.iter().filter(|f| !f.is_chatlog).count(), 1);
-        assert!(m.take_events().contains(&ChatlogEvent::System { character: "Alaheem Jihad".into(), system: "Jita".into(), event_ts: 20261116090000, is_jump: false }));
+        assert!(m.take_events().contains(&ChatlogEvent::System { character: "Some Pilot".into(), system: "Jita".into(), event_ts: 20261116090000, is_jump: false }));
 
-        m.remove_character("Alaheem Jihad");
+        m.remove_character("Some Pilot");
         assert!(m.files.is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
