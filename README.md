@@ -11,7 +11,7 @@ existing install's settings carry over.
 >   `config.exe` are not yet.
 > - **Linux (Hyprland):** thumbnails, layouts, hotkeys and groups, minimize/close all, auto-move, tray, `evemajpreview://`
 >   links, chat-log monitoring (system names, notifications, sounds, Travel Mode) and the activity overlays (DPS,
->   mining, bounty, CPU/RAM) work; the panels, region selection and the config dialog are not yet. See [Linux (Hyprland)](#linux-hyprland).
+>   mining, bounty, CPU/RAM) and the settings window work; the panels and region selection are not yet. See [Linux (Hyprland)](#linux-hyprland).
 >
 > Unported settings still load and save, and log a warning when enabled.
 
@@ -51,6 +51,7 @@ behave the same.
 sudo pacman -S --needed rust wayland mesa libdrm cairo pango xdg-utils wl-clipboard   # Arch; any distro with these works
 cargo linux                                                    # = build --release for x86_64-unknown-linux-gnu
 ./target/x86_64-unknown-linux-gnu/release/eve-maj-preview      # --profile NAME.json, --fps N (default 30)
+./target/x86_64-unknown-linux-gnu/release/eve-maj-config       # settings window (needs webkit2gtk-4.1); optional NAME.json
 ```
 
 - Profiles, `accounts.json` and `eve-maj.log` live in `~/.config/eve-maj/` (the Windows build keeps them next to the
@@ -66,8 +67,13 @@ cargo linux                                                    # = build --relea
 - **Minimize** parks a client on the hidden `special:evemaj` workspace; clicking its thumbnail or cycling to it brings
   it back to the current workspace. Clients on a special workspace that isn't shown count as minimized.
 - **Auto-move** floats a client and moves it to its saved window position. Save the current positions from the tray
-  ("Save Client Window Positions"); on Windows the config dialog does this.
-- **Tray icon** (any StatusNotifierItem host: Waybar, KDE, ...): profiles, dragging/auto-minimize/travel/visibility
+  ("Save Client Window Positions") or per character in the settings window.
+- **Settings window** (`eve-maj-config`): the same settings dialog as on Windows (its HTML/CSS/JS, every tab and
+  language), in a native WebKitGTK window. Open it from the tray (click the icon, or Settings…) or run it directly.
+  Saving updates the running app; live preview, Test Notification, profile switching and pausing hotkeys while a key
+  is being recorded all reach the running app over its instance socket. Not yet on Linux: region selection, Identify
+  displays and in-app updates. `runOnStartup` writes an XDG autostart entry.
+- **Tray icon** (any StatusNotifierItem host: Waybar, KDE, ...): settings, profiles, dragging/auto-minimize/travel/visibility
   toggles, restore positions, suspend hotkeys, close all, exit.
 - **`evemajpreview://` links** work like on Windows: the app registers itself as the handler (`autoRegisterProtocol`),
   and a second start with a link (`eve-maj-preview --protocol URL`, or `xdg-open URL`) forwards it to the running instance.
@@ -84,8 +90,7 @@ cargo linux                                                    # = build --relea
 - Thumbnail refresh rate is `--fps` (default 30): unlike DWM, every refresh is a GPU copy done by Hyprland, so lower it
   if you run many clients.
 
-Not on Linux yet: the list/history panels, region selection and the config
-dialog.
+Not on Linux yet: the list/history panels and region selection.
 
 ## License
 

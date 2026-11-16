@@ -72,6 +72,11 @@ impl HotkeyHost<WindowId> for Snapshot {
 impl App {
     /// (Re)binds every live hotkey in the compositor: all of them, or just the suspend key while suspended.
     pub(super) fn register_hotkeys(&mut self) {
+        if self.dialog_hotkeys_suspended {
+            self.wm.set_hotkeys(&[]);
+            SLOG.info(format_args!("Hotkeys paused while the settings dialog records a key"));
+            return;
+        }
         let repeating = self.config.hotkeys.allow_hotkey_auto_repeat;
         let binds: Vec<KeyBind> = self
             .hotkeys
@@ -438,6 +443,7 @@ impl App {
     pub(super) fn on_tray_command(&mut self, cmd: TrayCommand) {
         SLOG.info(format_args!("Tray: {cmd:?}"));
         match cmd {
+            TrayCommand::OpenSettings => open_settings(&self.config.profile_name),
             TrayCommand::LoadProfile(name) => self.switch_profile(&name),
             TrayCommand::ToggleDragging => {
                 self.config.interaction.enable_dragging = !self.config.interaction.enable_dragging;
@@ -512,6 +518,18 @@ impl App {
         // Restarts or stops chat-log monitoring if its settings changed.
         self.ensure_chatlog();
         self.scan_needed = true;
+    }
+}
+
+/// Starts the settings window (eve-maj-config, next to this binary or on PATH) on the running profile.
+fn open_settings(profile: &str) {
+    let sibling = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("eve-maj-config"))).filter(|p| p.is_file());
+    let program = sibling.map(|p| p.into_os_string()).unwrap_or_else(|| "eve-maj-config".into());
+    match std::process::Command::new(&program).arg(profile).spawn() {
+        Ok(mut child) => {
+            std::thread::spawn(move || child.wait());
+        }
+        Err(e) => SLOG.err(format_args!("Couldn't start the settings window ({}): {e}", program.to_string_lossy())),
     }
 }
 
