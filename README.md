@@ -1,12 +1,19 @@
 # EVE-Maj Rusty
 
-A Rust port of [EVE-Maj Preview](https://github.com/1234nin4321/EveMajImproved), the lightweight Windows tool that
-shows live DWM thumbnail previews of EVE Online client windows. Profiles (`profiles/*.json`) use the same format as
-the Zig build, so an existing install's settings carry over.
+A Rust port of [EVE-Maj Preview](https://github.com/1234nin4321/EveMajImproved), the lightweight tool that shows live
+thumbnail previews of EVE Online client windows: DWM thumbnails on Windows, and a native Wayland front end for
+[Hyprland](https://hyprland.org) on Linux. Profiles (`profiles/*.json`) use the same format as the Zig build, so an
+existing install's settings carry over.
 
-> Work in progress. Milestone 1 (thumbnails, clicking, dragging/snapping, layouts, notifications, tray, profile
-> switching) is ported; hotkeys, chatlog monitoring and its overlays, the client list and history panels, region
-> selection and `config.exe` are not yet. Unported settings still load and save, and log a warning when enabled.
+> Work in progress.
+> - **Windows:** Milestone 1 (thumbnails, clicking, dragging/snapping, layouts, notifications, tray, profile switching)
+>   is ported; hotkeys, chatlog monitoring and its overlays, the client list and history panels, region selection and
+>   `config.exe` are not yet.
+> - **Linux (Hyprland):** thumbnails, layouts, hotkeys and groups, minimize/close all, auto-move, tray, `evemajpreview://`
+>   links, and chat-log monitoring (system names, notifications, sounds, Travel Mode) work; the activity overlays,
+>   panels, region selection and the config dialog are not yet. See [Linux (Hyprland)](#linux-hyprland).
+>
+> Unported settings still load and save, and log a warning when enabled.
 
 ## Layout
 
