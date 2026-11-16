@@ -32,6 +32,33 @@ cargo t                                 # unit tests on the Linux host
 
 On Windows, `cargo build --release --target x86_64-pc-windows-gnu` (or `-msvc`) works the same way.
 
+## Linux (Hyprland)
+
+`eve-maj-preview` also runs natively on Linux under [Hyprland](https://hyprland.org). Each thumbnail is a
+wlr-layer-shell overlay (so it stays above fullscreen clients); Hyprland renders the EVE window straight into a GPU
+buffer (`hyprland-toplevel-export-v1` + dmabuf) that is drawn into the thumbnail without passing through the CPU, with
+the same text/border overlay as on Windows. Layout and styling come from the same `core` code, so profiles behave the same.
+
+```sh
+sudo pacman -S --needed rust wayland mesa libdrm cairo pango   # Arch; any distro with these dev libs works
+cargo linux                                                    # = build --release for x86_64-unknown-linux-gnu
+./target/x86_64-unknown-linux-gnu/release/eve-maj-preview      # --profile NAME.json, --fps N (default 30)
+```
+
+- Profiles, `accounts.json` and `eve-maj.log` live in `~/.config/eve-maj/` (the Windows build keeps them next to the
+  .exe). Edits to the active profile's JSON are picked up while it runs.
+- EVE clients are found by the default window filter: the Wine/Proton process image `exefile.exe` (or a window class
+  of that name). A filter's `class_names` also match Hyprland window classes, e.g. `steam_app_8500`.
+- Left-click focuses a client, right-drag moves a thumbnail, Ctrl+right-drag moves them all. `display.monitorIndex`
+  counts Hyprland monitors by id; with none set, `startX`/`startY` are relative to monitor 0.
+- Clients on a special workspace that isn't shown count as minimized.
+- Optional `hyprland.conf` rule: `layerrule = noanim, eve-maj-preview`.
+- Thumbnail refresh rate is `--fps` (default 30): unlike DWM, every refresh is a GPU copy done by Hyprland, so lower it
+  if you run many clients.
+
+Not on Linux yet: hotkeys and groups, tray, `evemajpreview://` links, chatlog-driven notifications and overlays, the
+list/history panels, region selection and the config dialog.
+
 ## License
 
 GPL-3.0, like the project it is ported from. The bundled Cascadia fonts are under the SIL Open Font License

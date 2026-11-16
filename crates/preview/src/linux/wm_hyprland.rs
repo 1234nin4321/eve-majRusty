@@ -1,0 +1,205 @@
+//! [`WindowManager`] for Hyprland, over its IPC sockets: `.socket.sock` for queries and dispatchers, `.socket2.sock`
+//! for the event stream that tells us when to rescan.
+
+use std::io::{Read, Write};
+use std::os::fd::{AsRawFd, RawFd};
+use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
+
+use eve_maj_core::display_grid::Rect;
+use eve_maj_core::log::Scope;
+use serde_json::Value;
+
+use super::backend::{Monitor, Toplevel, WindowId, WindowManager, WmEvent};
+
+const SLOG: Scope = Scope::new("hyprland");
+
+pub struct HyprlandWm {
+    request_path: PathBuf,
+    events: Option<UnixStream>,
+    event_buf: String,
+    /// Hyprland 0.57+ with a Lua config takes `hl.dsp.*` dispatchers instead of the classic `name args` form; learned on first use.
+    lua_dispatch: std::cell::Cell<Option<bool>>,
+}
+
+impl HyprlandWm {
+    /// None when not running under Hyprland.
+    pub fn connect() -> Option<HyprlandWm> {
+        let sig = std::env::var("HYPRLAND_INSTANCE_SIGNATURE").ok()?;
+        let runtime = std::env::var("XDG_RUNTIME_DIR").ok()?;
+        let dir = PathBuf::from(runtime).join("hypr").join(sig);
+        let events = UnixStream::connect(dir.join(".socket2.sock")).ok().filter(|s| s.set_nonblocking(true).is_ok());
+        if events.is_none() {
+            SLOG.warn(format_args!("No Hyprland event socket; window changes are picked up by periodic rescans only"));
+        }
+        Some(HyprlandWm { request_path: dir.join(".socket.sock"), events, event_buf: String::new(), lua_dispatch: std::cell::Cell::new(None) })
+    }
+
+    fn request(&self, command: &str) -> Option<String> {
+        let mut stream = UnixStream::connect(&self.request_path).ok()?;
+        stream.write_all(command.as_bytes()).ok()?;
+        let mut out = String::new();
+        stream.read_to_string(&mut out).ok()?;
+        Some(out)
+    }
+
+    fn request_json(&self, command: &str) -> Option<Value> {
+        let text = self.request(command)?;
+        serde_json::from_str(&text).map_err(|e| SLOG.warn(format_args!("Unparseable reply to '{command}': {e}"))).ok()
+    }
+
+    /// Runs a dispatcher, given in both syntaxes; tries whichever this Hyprland accepted last, then the other.
+    fn dispatch(&self, classic: &str, lua: &str) {
+        let order = match self.lua_dispatch.get() {
+            Some(true) => [true, false],
+            _ => [false, true],
+        };
+        let mut replies = Vec::new();
+        for use_lua in order {
+            let args = if use_lua { lua } else { classic };
+            let reply = self.request(&format!("dispatch {args}"));
+            if reply.as_deref() == Some("ok") {
+                self.lua_dispatch.set(Some(use_lua));
+                return;
+            }
+            replies.push((args, reply));
+        }
+        SLOG.warn(format_args!("dispatch failed in both syntaxes: {replies:?}"));
+    }
+
+    fn raw_monitors(&self) -> Vec<(Monitor, i64, String)> {
+        let Some(Value::Array(list)) = self.request_json("j/monitors") else { return Vec::new() };
+        let mut out: Vec<(Monitor, i64, String)> = list.iter().map(parse_monitor).collect();
+        out.sort_by_key(|(_, id, _)| *id);
+        out
+    }
+
+    fn parse_event(&self, line: &str) -> Option<WmEvent> {
+        let (name, data) = line.split_once(">>")?;
+        match name {
+            "activewindowv2" => Some(WmEvent::Focus(parse_address(data).filter(|&a| a != 0))),
+            "openwindow" | "closewindow" | "windowtitlev2" | "movewindowv2" | "changefloatingmode" | "monitoradded" | "monitorremoved" | "monitoraddedv2"
+            | "monitorremovedv2" | "activespecial" | "activespecialv2" | "fullscreen" | "workspacev2" | "configreloaded" => Some(WmEvent::Changed),
+            _ => None,
+        }
+    }
+}
+
+impl WindowManager for HyprlandWm {
+    fn name(&self) -> &'static str {
+        "Hyprland"
+    }
+
+    fn monitors(&self) -> Vec<Monitor> {
+        self.raw_monitors().into_iter().map(|(m, _, _)| m).collect()
+    }
+
+    fn toplevels(&self) -> Vec<Toplevel> {
+        let Some(Value::Array(list)) = self.request_json("j/clients") else { return Vec::new() };
+        // Hyprland has no minimize; a window parked on a special workspace that no monitor is showing is the closest thing.
+        let shown_specials: Vec<String> = self.raw_monitors().into_iter().map(|(_, _, special)| special).filter(|s| !s.is_empty()).collect();
+        list.iter()
+            .filter(|v| v.get("mapped").and_then(Value::as_bool).unwrap_or(false))
+            .filter_map(|v| {
+                let workspace = v.get("workspace").map(|w| string(w, "name")).unwrap_or_default();
+                Some(Toplevel {
+                    id: parse_address(v.get("address")?.as_str()?)?,
+                    title: string(v, "title"),
+                    class: string(v, "class"),
+                    initial_class: string(v, "initialClass"),
+                    pid: int(v, "pid") as i32,
+                    minimized: workspace.starts_with("special") && !shown_specials.contains(&workspace),
+                })
+            })
+            .collect()
+    }
+
+    fn active(&self) -> Option<WindowId> {
+        let v = self.request_json("j/activewindow")?;
+        parse_address(v.get("address")?.as_str()?).filter(|&a| a != 0)
+    }
+
+    fn focus(&self, id: WindowId) {
+        self.dispatch(&format!("focuswindow address:0x{id:x}"), &format!("hl.dsp.focus({{ window = \"address:0x{id:x}\" }})"));
+    }
+
+    fn event_fd(&self) -> Option<RawFd> {
+        self.events.as_ref().map(|s| s.as_raw_fd())
+    }
+
+    fn read_events(&mut self) -> Vec<WmEvent> {
+        let mut out = Vec::new();
+        let Some(stream) = self.events.as_mut() else { return out };
+        let mut chunk = [0u8; 8192];
+        loop {
+            match stream.read(&mut chunk) {
+                Ok(0) => {
+                    SLOG.warn(format_args!("Hyprland event socket closed"));
+                    self.events = None;
+                    break;
+                }
+                Ok(k) => self.event_buf.push_str(&String::from_utf8_lossy(&chunk[..k])),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => {
+                    self.events = None;
+                    break;
+                }
+            }
+        }
+        while let Some(nl) = self.event_buf.find('\n') {
+            let line: String = self.event_buf.drain(..=nl).collect();
+            if let Some(ev) = self.parse_event(line.trim_end()) {
+                out.push(ev);
+            }
+        }
+        out
+    }
+}
+
+fn parse_address(s: &str) -> Option<u64> {
+    u64::from_str_radix(s.trim_start_matches("0x"), 16).ok()
+}
+
+fn int(v: &Value, key: &str) -> i64 {
+    v.get(key).and_then(Value::as_i64).unwrap_or(0)
+}
+
+fn string(v: &Value, key: &str) -> String {
+    v.get(key).and_then(Value::as_str).unwrap_or("").to_owned()
+}
+
+/// (monitor, Hyprland id, name of the special workspace it's showing or "").
+fn parse_monitor(v: &Value) -> (Monitor, i64, String) {
+    let scale = v.get("scale").and_then(Value::as_f64).unwrap_or(1.0) as f32;
+    let (pw, ph) = (int(v, "width") as f32, int(v, "height") as f32);
+    // width/height are the mode's pixels; layout space is scaled and, for 90/270-degree transforms, rotated.
+    let (w, h) = if int(v, "transform") % 2 == 1 { (ph / scale, pw / scale) } else { (pw / scale, ph / scale) };
+    let (x, y) = (int(v, "x") as i32, int(v, "y") as i32);
+    let bounds = Rect { left: x, top: y, right: x + w.round() as i32, bottom: y + h.round() as i32 };
+    let reserved: Vec<i32> = v.get("reserved").and_then(Value::as_array).map(|a| a.iter().map(|n| n.as_i64().unwrap_or(0) as i32).collect()).unwrap_or_default();
+    let r = |i: usize| reserved.get(i).copied().unwrap_or(0);
+    let work_area = Rect { left: bounds.left + r(0), top: bounds.top + r(1), right: bounds.right - r(2), bottom: bounds.bottom - r(3) };
+    let special = v.get("specialWorkspace").map(|w| string(w, "name")).unwrap_or_default();
+    (Monitor { name: string(v, "name"), bounds, work_area, scale }, int(v, "id"), special)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rotated_and_scaled_monitor_geometry() {
+        let v: Value = serde_json::json!({"id": 1, "name": "DP-1", "x": 100, "y": 0, "width": 2560, "height": 1440, "scale": 2.0, "transform": 1, "reserved": [0, 40, 0, 0], "specialWorkspace": {"name": ""}});
+        let (m, id, _) = parse_monitor(&v);
+        assert_eq!(id, 1);
+        assert_eq!(m.bounds, Rect { left: 100, top: 0, right: 820, bottom: 1280 });
+        assert_eq!(m.work_area.top, 40);
+    }
+
+    #[test]
+    fn addresses_parse_with_or_without_prefix() {
+        assert_eq!(parse_address("0x55f882fe0500"), Some(0x55f882fe0500));
+        assert_eq!(parse_address("55f882fe0500"), Some(0x55f882fe0500));
+    }
+}

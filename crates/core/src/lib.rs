@@ -20,3 +20,5 @@ pub mod paste_upload;
 pub mod ultra_potato;
 pub mod display_info;
 pub mod mouse_bindings;
+pub mod layout;
+pub mod render;

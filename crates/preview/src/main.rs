@@ -39,7 +39,15 @@ fn main() {
     app::main();
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+mod linux;
+
+#[cfg(target_os = "linux")]
 fn main() {
-    eprintln!("eve-maj-preview only runs on Windows");
+    linux::main();
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn main() {
+    eprintln!("eve-maj-preview runs on Windows and on Linux under Hyprland");
 }

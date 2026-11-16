@@ -37,5 +37,23 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+# Linux front end (Hyprland): Wayland layer-shell overlays, GPU window capture, cairo/pango text.
+[target.'cfg(target_os = "linux")'.dependencies]
+wayland-client = "0.31"
+wayland-backend = { version = "0.3", features = ["client_system"] }
+wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+wayland-scanner = "0.31"
+wayland-egl = "0.32"
+khronos-egl = { version = "6", features = ["static"] }
+glow = "0.16"
+gbm = { version = "0.18", default-features = false }
+drm-fourcc = "2"
+cairo-rs = "0.21"
+pango = "0.21"
+pangocairo = "0.21"
+libc = "0.2"
+bitflags = "2"
+
 [build-dependencies]
 embed-resource = "3"
