@@ -109,15 +109,19 @@ impl HyprlandWm {
         out
     }
 
-    fn parse_event(&self, line: &str) -> Option<WmEvent> {
-        let (name, data) = line.split_once(">>")?;
-        match name {
-            "activewindowv2" => Some(WmEvent::Focus(parse_address(data).filter(|&a| a != 0))),
-            "openwindow" | "closewindow" | "windowtitlev2" | "movewindowv2" | "changefloatingmode" | "monitoradded" | "monitorremoved" | "monitoraddedv2"
-            | "monitorremovedv2" | "activespecial" | "activespecialv2" | "fullscreen" | "workspacev2" => Some(WmEvent::ConfigReloaded),
-            "custom" => data.strip_prefix(EVENT_PREFIX).and_then(|id| id.parse().ok()).map(WmEvent::Hotkey),
-            _ => None,
-        }
+}
+
+/// One line from Hyprland's event socket (`name>>data`).
+fn parse_event(line: &str) -> Option<WmEvent> {
+    let (name, data) = line.split_once(">>")?;
+    match name {
+        "activewindowv2" => Some(WmEvent::Focus(parse_address(data).filter(|&a| a != 0))),
+        "openwindow" | "closewindow" | "windowtitlev2" | "movewindowv2" | "changefloatingmode" | "monitoradded" | "monitorremoved" | "monitoraddedv2"
+        | "monitorremovedv2" | "activespecial" | "activespecialv2" | "fullscreen" | "workspacev2" => Some(WmEvent::Changed),
+        // A reload drops runtime binds, so hotkeys must be registered again.
+        "configreloaded" => Some(WmEvent::ConfigReloaded),
+        "custom" => data.strip_prefix(EVENT_PREFIX).and_then(|id| id.parse().ok()).map(WmEvent::Hotkey),
+        _ => None,
     }
 }
 
@@ -166,7 +170,7 @@ impl WindowManager for HyprlandWm {
     fn set_hotkeys(&mut self, binds: &[KeyBind]) -> usize {
         if self.uses_lua() {
             // Our binds live in a Lua table so we can unbind exactly them (hl.unbind by key would also drop the user's own).
-            self.eval("_G.evemaj = _G.evemaj or {}; for _, b in pairs(_G.evemaj) do b:unbind() end; _G.evemaj = {}");
+            self.eval("_G.evemaj = _G.evemaj or {}; for _, b in pairs(_G.evemaj) do pcall(function() b:unbind() end) end; _G.evemaj = {}");
             let mut ok = 0;
             for b in binds {
                 let keys = b.modifiers.iter().copied().chain(std::iter::once(b.key.as_str())).collect::<Vec<_>>().join(" + ");
@@ -257,7 +261,7 @@ impl WindowManager for HyprlandWm {
         }
         while let Some(nl) = self.event_buf.find('\n') {
             let line: String = self.event_buf.drain(..=nl).collect();
-            if let Some(ev) = self.parse_event(line.trim_end()) {
+            if let Some(ev) = parse_event(line.trim_end()) {
                 out.push(ev);
             }
         }
@@ -314,6 +318,16 @@ mod tests {
         assert_eq!(id, 1);
         assert_eq!(m.bounds, Rect { left: 100, top: 0, right: 820, bottom: 1280 });
         assert_eq!(m.work_area.top, 40);
+    }
+
+    #[test]
+    fn events_map_to_the_right_kind() {
+        assert!(matches!(parse_event("openwindow>>55f8,1,foot,x"), Some(WmEvent::Changed)));
+        assert!(matches!(parse_event("workspacev2>>3,3"), Some(WmEvent::Changed)));
+        assert!(matches!(parse_event("configreloaded>>"), Some(WmEvent::ConfigReloaded)));
+        assert!(matches!(parse_event("custom>>eve-maj:2001"), Some(WmEvent::Hotkey(2001))));
+        assert!(parse_event("custom>>someone-else:1").is_none());
+        assert!(matches!(parse_event("activewindowv2>>0x55f8"), Some(WmEvent::Focus(Some(0x55f8)))));
     }
 
     #[test]

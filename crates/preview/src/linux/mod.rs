@@ -473,7 +473,7 @@ impl App {
                 }
                 let thumbs = std::mem::take(&mut self.thumbs);
                 for t in thumbs {
-                    self.destroy_thumb(t);
+                    self.destroy_thumb(t, false);
                 }
                 let _ = queue.flush();
                 return Ok(());
@@ -537,7 +537,7 @@ impl App {
             }
             SLOG.info(format_args!("Client closed: {}", self.thumbs[i].name));
             let t = self.thumbs.remove(i);
-            self.destroy_thumb(t);
+            self.destroy_thumb(t, true);
         }
         needs_reflow |= managed && self.thumbs.len() != before;
 
@@ -713,14 +713,15 @@ impl App {
         SLOG.info(format_args!("Created thumbnail for {} at ({}, {}) {}x{}", w.character_name, rect.x, rect.y, rect.width, rect.height));
     }
 
-    fn destroy_thumb(&mut self, mut t: Thumb) {
+    /// `window_gone`: the client window closed or unmapped (as opposed to shutdown or a filter change).
+    fn destroy_thumb(&mut self, mut t: Thumb, window_gone: bool) {
         if self.pointer_state.hover == Some(t.id) {
             self.pointer_state.hover = None;
         }
         if self.pointer_state.drag.as_ref().is_some_and(|d| d.thumb == t.id) {
             self.pointer_state.drag = None;
         }
-        self.free_capture(&mut t.cap);
+        self.free_capture(&mut t.cap, window_gone);
         if let Some(tex) = t.overlay_tex.take() {
             self.gpu.make_current_surfaceless();
             self.gpu.delete_texture(tex);

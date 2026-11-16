@@ -130,10 +130,16 @@ impl App {
         t.cap.frame = Some(self.capture.start(t.window, t.id, &self.qh));
     }
 
-    /// Releases everything a thumbnail's capture holds.
-    pub(super) fn free_capture(&self, cap: &mut Capture) {
+    /// Releases everything a thumbnail's capture holds. `window_gone`: the captured window was closed or unmapped.
+    pub(super) fn free_capture(&self, cap: &mut Capture, window_gone: bool) {
         if let Some(f) = cap.frame.take() {
-            f.destroy();
+            // Once the window is gone, Hyprland may already have freed this frame (a pending copy is dropped when its
+            // window unmaps) or never created it (a capture request for a window that just closed is ignored), without
+            // telling us. Destroying it then is a protocol error ("invalid object") that kills our whole connection. So
+            // just let go: if Hyprland does still have it, it sends ready/failed and the orphan-frame handler destroys it.
+            if !window_gone {
+                f.destroy();
+            }
         }
         for b in &mut cap.bufs {
             self.free_capbuf(b);
