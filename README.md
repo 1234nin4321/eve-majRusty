@@ -41,6 +41,11 @@ On Windows, `cargo build --release --target x86_64-pc-windows-gnu` (or `-msvc`) 
 
 ## Linux (Hyprland)
 
+![Thumbnails with activity overlays and notifications above the settings window, on Hyprland](docs/screenshots/linux/hero.png)
+
+*Demo setup: the "clients" are stand-in windows and the pilots, systems and log lines are made up. More screenshots
+are in [docs/screenshots/linux](docs/screenshots/linux).*
+
 `eve-maj-preview` also runs natively on Linux under [Hyprland](https://hyprland.org). Each thumbnail is a
 wlr-layer-shell overlay (so it stays above fullscreen clients); Hyprland renders the EVE window straight into a GPU
 buffer (`hyprland-toplevel-export-v1` + dmabuf) that is drawn into the thumbnail without passing through the CPU, with
