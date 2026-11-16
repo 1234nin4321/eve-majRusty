@@ -15,6 +15,7 @@ static ICON_ICO: &[u8] = include_bytes!("../../../../assets/icon.ico");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrayCommand {
+    OpenSettings,
     LoadProfile(String),
     ToggleDragging,
     ToggleAutoMinimize,
@@ -73,6 +74,11 @@ impl ksni::Tray for EveTray {
         format!("EVE-Maj Preview ({})", self.state.current_profile)
     }
 
+    /// Left click opens the settings window, like double-clicking the Windows tray icon.
+    fn activate(&mut self, _x: i32, _y: i32) {
+        self.send(TrayCommand::OpenSettings);
+    }
+
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
         self.icon.clone()
     }
@@ -95,6 +101,8 @@ impl ksni::Tray for EveTray {
             .into()]
         };
         let mut menu = vec![
+            item("Settings…", TrayCommand::OpenSettings),
+            MenuItem::Separator,
             SubMenu { label: "Load Profile".into(), submenu: profiles, ..Default::default() }.into(),
             MenuItem::Separator,
             check("Enable Dragging", s.dragging, TrayCommand::ToggleDragging),

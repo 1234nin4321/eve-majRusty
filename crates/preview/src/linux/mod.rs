@@ -10,10 +10,12 @@
 //!
 //! Layout, styling and snapping decisions live in eve-maj-core (`layout`, `render`) and match the Windows painter.
 
+mod activity;
 mod alerts;
 mod backend;
 mod capture;
 mod control;
+mod dialog;
 mod gpu;
 mod ipc;
 mod notify;
@@ -234,6 +236,8 @@ fn run() -> Result<(), String> {
         tray: None,
         exit_requested: false,
         chatlog: None,
+        trackers: activity::Trackers::default(),
+        dialog_hotkeys_suspended: false,
         chatlog_warned: false,
     };
     app.tray = tray::Tray::spawn(app.tray_state());
@@ -374,6 +378,9 @@ struct App {
     tray: Option<tray::Tray>,
     exit_requested: bool,
     chatlog: Option<notify::Chatlog>,
+    trackers: activity::Trackers,
+    /// The settings dialog is recording a key: no hotkeys bound until it's done.
+    dialog_hotkeys_suspended: bool,
     /// The "logs not found" warning was logged (once per run).
     chatlog_warned: bool,
 }
@@ -471,9 +478,12 @@ impl App {
                 }
             }
             if ready(ipc_slot) {
-                let urls = self.ipc.as_ref().map(|l| l.accept_all()).unwrap_or_default();
-                for url in urls {
-                    self.on_protocol_url(&url);
+                let messages = self.ipc.as_ref().map(|l| l.accept_all()).unwrap_or_default();
+                for message in messages {
+                    match message {
+                        ipc::Incoming::Url(url) => self.on_protocol_url(&url),
+                        ipc::Incoming::Command(cmd) => self.on_dialog_command(cmd),
+                    }
                 }
             }
             if ready(chatlog_slot) {
@@ -528,6 +538,7 @@ impl App {
         self.check_auto_minimize();
         self.verify_pending_moves();
         self.check_travel_left_behind();
+        self.update_activity();
         self.render_dirty();
         if self.tick % 5 == 0 {
             self.refresh_tray();

@@ -10,8 +10,8 @@ existing install's settings carry over.
 >   is ported; hotkeys, chatlog monitoring and its overlays, the client list and history panels, region selection and
 >   `config.exe` are not yet.
 > - **Linux (Hyprland):** thumbnails, layouts, hotkeys and groups, minimize/close all, auto-move, tray, `evemajpreview://`
->   links, and chat-log monitoring (system names, notifications, sounds, Travel Mode) work; the activity overlays,
->   panels, region selection and the config dialog are not yet. See [Linux (Hyprland)](#linux-hyprland).
+>   links, chat-log monitoring (system names, notifications, sounds, Travel Mode) and the activity overlays (DPS,
+>   mining, bounty, CPU/RAM) and the settings window work; the panels and region selection are not yet. See [Linux (Hyprland)](#linux-hyprland).
 >
 > Unported settings still load and save, and log a warning when enabled.
 
@@ -41,6 +41,11 @@ On Windows, `cargo build --release --target x86_64-pc-windows-gnu` (or `-msvc`) 
 
 ## Linux (Hyprland)
 
+![Thumbnails with activity overlays and notifications above the settings window, on Hyprland](docs/screenshots/linux/hero.png)
+
+*Demo setup: the "clients" are stand-in windows and the pilots, systems and log lines are made up. More screenshots
+are in [docs/screenshots/linux](docs/screenshots/linux).*
+
 `eve-maj-preview` also runs natively on Linux under [Hyprland](https://hyprland.org). Each thumbnail is a
 wlr-layer-shell overlay (so it stays above fullscreen clients); Hyprland renders the EVE window straight into a GPU
 buffer (`hyprland-toplevel-export-v1` + dmabuf) that is drawn into the thumbnail without passing through the CPU, with
@@ -51,6 +56,7 @@ behave the same.
 sudo pacman -S --needed rust wayland mesa libdrm cairo pango xdg-utils wl-clipboard   # Arch; any distro with these works
 cargo linux                                                    # = build --release for x86_64-unknown-linux-gnu
 ./target/x86_64-unknown-linux-gnu/release/eve-maj-preview      # --profile NAME.json, --fps N (default 30)
+./target/x86_64-unknown-linux-gnu/release/eve-maj-config       # settings window (needs webkit2gtk-4.1); optional NAME.json
 ```
 
 - Profiles, `accounts.json` and `eve-maj.log` live in `~/.config/eve-maj/` (the Windows build keeps them next to the
@@ -66,8 +72,13 @@ cargo linux                                                    # = build --relea
 - **Minimize** parks a client on the hidden `special:evemaj` workspace; clicking its thumbnail or cycling to it brings
   it back to the current workspace. Clients on a special workspace that isn't shown count as minimized.
 - **Auto-move** floats a client and moves it to its saved window position. Save the current positions from the tray
-  ("Save Client Window Positions"); on Windows the config dialog does this.
-- **Tray icon** (any StatusNotifierItem host: Waybar, KDE, ...): profiles, dragging/auto-minimize/travel/visibility
+  ("Save Client Window Positions") or per character in the settings window.
+- **Settings window** (`eve-maj-config`): the same settings dialog as on Windows (its HTML/CSS/JS, every tab and
+  language), in a native WebKitGTK window. Open it from the tray (click the icon, or Settings…) or run it directly.
+  Saving updates the running app; live preview, Test Notification, profile switching and pausing hotkeys while a key
+  is being recorded all reach the running app over its instance socket. Not yet on Linux: region selection, Identify
+  displays and in-app updates. `runOnStartup` writes an XDG autostart entry.
+- **Tray icon** (any StatusNotifierItem host: Waybar, KDE, ...): settings, profiles, dragging/auto-minimize/travel/visibility
   toggles, restore positions, suspend hotkeys, close all, exit.
 - **`evemajpreview://` links** work like on Windows: the app registers itself as the handler (`autoRegisterProtocol`),
   and a second start with a link (`eve-maj-preview --protocol URL`, or `xdg-open URL`) forwards it to the running instance.
@@ -75,14 +86,16 @@ cargo linux                                                    # = build --relea
   full, jumps, ...) and Travel Mode's left-behind alert, from EVE's chat and game logs. When `chatlogDir`/`gamelogDir`
   don't exist, the logs are found in the running client's Wine prefix (`WINEPREFIX`, or Proton's
   `STEAM_COMPAT_DATA_PATH/pfx`) under `drive_c/users/*/Documents/EVE/logs`.
+- **Activity overlays** (`combat`, `mining`, `bounty`, `resources` sections): incoming/outgoing DPS, mining m3 and
+  ISK rates, bounty ISK rate (all from the game log, so they need chat-log monitoring on) and each client's CPU/RAM
+  (from `/proc`; VRAM isn't available on Linux), with the Taking damage, Laser idle and Mining stopped alerts.
 - **Notification sounds** play through `ffplay`, `mpv`, `pw-play` or `paplay` (WAV/MP3; Windows `C:\...` paths from a
   copied profile are skipped); **spoken alerts** use `spd-say` (speech-dispatcher) or `espeak-ng`.
 - Optional `hyprland.conf` rule: `layerrule = noanim, eve-maj-preview`.
 - Thumbnail refresh rate is `--fps` (default 30): unlike DWM, every refresh is a GPU copy done by Hyprland, so lower it
   if you run many clients.
 
-Not on Linux yet: the activity overlays (DPS, mining, bounty), the list/history panels, region selection and the config
-dialog.
+Not on Linux yet: the list/history panels and region selection.
 
 ## License
 

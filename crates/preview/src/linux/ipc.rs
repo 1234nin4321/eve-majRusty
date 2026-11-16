@@ -39,6 +39,29 @@ pub struct Listener {
     path: PathBuf,
 }
 
+/// The settings dialog's previews carry a whole thumbnail config; links are tiny.
+const MAX_MESSAGE: u64 = 1024 * 1024;
+const COMMAND_PREFIX: &[u8] = b"evemaj-cmd:";
+
+/// Something sent to the running instance.
+pub enum Incoming {
+    /// An evemajpreview:// link from a second invocation.
+    Url(String),
+    /// A settings-dialog command: "evemaj-cmd:<id>\n<payload>", the id/payload pair the Windows build sends with WM_COPYDATA.
+    Command(eve_maj_core::protocol::Command),
+}
+
+fn parse_message(buf: &[u8]) -> Option<Incoming> {
+    if let Some(rest) = buf.strip_prefix(COMMAND_PREFIX) {
+        let nl = rest.iter().position(|&b| b == b'\n')?;
+        let id: usize = std::str::from_utf8(&rest[..nl]).ok()?.parse().ok()?;
+        let payload = &rest[nl + 1..];
+        return eve_maj_core::protocol::Command::from_copy_data(id, (!payload.is_empty()).then_some(payload)).map(Incoming::Command);
+    }
+    let text = std::str::from_utf8(buf).ok()?.trim();
+    (!text.is_empty()).then(|| Incoming::Url(text.to_owned()))
+}
+
 pub enum BindError {
     AlreadyRunning,
     Io(std::io::Error),
@@ -62,15 +85,19 @@ impl Listener {
         self.listener.as_raw_fd()
     }
 
-    /// URLs from every pending connection.
-    pub fn accept_all(&self) -> Vec<String> {
+    /// Messages from every pending connection.
+    pub fn accept_all(&self) -> Vec<Incoming> {
         let mut out = Vec::new();
         while let Ok((stream, _)) = self.listener.accept() {
             let _ = stream.set_nonblocking(false);
             let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(500)));
-            let mut buf = String::new();
-            if stream.take(4096).read_to_string(&mut buf).is_ok() && !buf.is_empty() {
-                out.push(buf.trim().to_owned());
+            let mut buf = Vec::new();
+            if stream.take(MAX_MESSAGE).read_to_end(&mut buf).is_err() || buf.is_empty() {
+                continue;
+            }
+            match parse_message(&buf) {
+                Some(m) => out.push(m),
+                None => SLOG.warn(format_args!("Ignoring an unrecognized instance-socket message ({} bytes)", buf.len())),
             }
         }
         out

@@ -8,4 +8,4 @@ linker = "x86_64-w64-mingw32-gcc"
 # The default target is Windows, so host-side unit tests need the Linux target spelled out.
 t = "test --target x86_64-unknown-linux-gnu"
 # Native Linux (Hyprland) build of eve-maj-preview: `cargo linux`, binary at target/x86_64-unknown-linux-gnu/release/.
-linux = "build --release --target x86_64-unknown-linux-gnu -p eve-maj-preview"
+linux = "build --release --target x86_64-unknown-linux-gnu -p eve-maj-preview -p eve-maj-config"

@@ -1,0 +1,22 @@
+[package]
+name = "eve-maj-config"
+description = "Settings dialog for EVE-Maj Preview"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+
+[[bin]]
+name = "eve-maj-config"
+path = "src/main.rs"
+
+[dependencies]
+eve-maj-core = { path = "../core" }
+serde_json = { version = "1", features = ["preserve_order"] }
+
+# The dialog's page (ui/, the Zig build's config_dialog.html/css/js and translations) runs in a native WebKitGTK window.
+[target.'cfg(target_os = "linux")'.dependencies]
+wry = "0.57"
+tao = "0.37"
+# Same GTK as wry/tao, for the native file and folder pickers.
+gtk = "0.18"
+libc = "0.2"

@@ -13,6 +13,7 @@ use eve_maj_core::log::Scope;
 use eve_maj_core::render::{now_ms, ActiveNotification, MAX_STACKED_NOTIFICATIONS};
 use eve_maj_core::types::NotificationType;
 
+use super::activity::{TrackerKey, Trackers};
 use super::{alerts, App};
 
 const SLOG: Scope = Scope::new("chatlog");
@@ -25,6 +26,7 @@ pub(super) struct Chatlog {
     characters: Vec<String>,
     /// The settings it was started with; a profile change to any of them restarts it.
     config: ChatlogConfig,
+    trackers: TrackerKey,
 }
 
 impl Chatlog {
@@ -78,9 +80,15 @@ impl App {
     /// configured directories, needs a running client to read the Wine prefix from).
     pub(super) fn ensure_chatlog(&mut self) {
         let cfg = &self.config.chatlog;
-        if self.chatlog.as_ref().is_some_and(|c| c.config != *cfg) {
-            SLOG.info(format_args!("Chat-log settings changed, restarting monitoring"));
+        let key = TrackerKey::from(&self.config);
+        if self.chatlog.as_ref().is_some_and(|c| !cfg.enabled || c.config != *cfg || c.trackers != key) {
+            SLOG.info(format_args!("Chat-log or tracker settings changed, restarting monitoring"));
             self.chatlog = None;
+            self.trackers = Trackers::default();
+            for t in &mut self.thumbs {
+                (t.metrics.has_dps_data, t.metrics.has_mining_data, t.metrics.has_bounty_data) = (false, false, false);
+                t.needs_render = true;
+            }
         }
         if !cfg.enabled || self.chatlog.is_some() || self.thumbs.is_empty() {
             return;
@@ -101,7 +109,9 @@ impl App {
             SLOG.err(format_args!("Couldn't create the chat-log wake pipe"));
             return;
         }
-        let monitor = ChatlogMonitor::new(&chat, &game, cfg.idle_poll_threshold, cfg.max_poll_multiplier, self.global_settings.character_id_map_snapshot());
+        let mut monitor = ChatlogMonitor::new(&chat, &game, cfg.idle_poll_threshold, cfg.max_poll_multiplier, self.global_settings.character_id_map_snapshot());
+        let (trackers, feeds) = Trackers::new(&self.config, &self.global_settings);
+        monitor.trackers = feeds;
         let wake_fd = fds[1];
         let wake = move || unsafe {
             libc::write(wake_fd, [1u8].as_ptr() as *const libc::c_void, 1);
@@ -109,7 +119,8 @@ impl App {
         match ChatlogWorker::spawn(monitor, Duration::from_millis(cfg.poll_interval_ms as u64), wake) {
             Ok(worker) => {
                 SLOG.info(format_args!("Chat-log monitoring started ({source}): {} and {}", chat.display(), game.display()));
-                self.chatlog = Some(Chatlog { worker: Some(worker), wake_read: fds[0], wake_write: fds[1], characters: Vec::new(), config: cfg.clone() });
+                self.chatlog = Some(Chatlog { worker: Some(worker), wake_read: fds[0], wake_write: fds[1], characters: Vec::new(), config: cfg.clone(), trackers: key });
+                self.trackers = trackers;
                 self.sync_chatlog_characters();
             }
             Err(e) => {
