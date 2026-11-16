@@ -76,6 +76,17 @@ impl App {
         let binds: Vec<KeyBind> = self
             .hotkeys
             .active_bindings()
+            .filter(|b| {
+                let vt = hotkeys::is_vt_switch_combo(b.key);
+                if vt {
+                    SLOG.err(format_args!(
+                        "Not binding {} ({}): Ctrl+Alt+F1-F12 switch Linux to a text console; pick another key",
+                        eve_maj_core::virtual_keys::format_virtual_key(b.key),
+                        b.description
+                    ));
+                }
+                !vt
+            })
             .filter_map(|b| match hotkeys::xkb_key_name(extract_vk(b.key)) {
                 Some(key) => Some(KeyBind { id: b.id, modifiers: hotkeys::modifier_names(b.key), key, repeating, description: b.description.clone() }),
                 None => {

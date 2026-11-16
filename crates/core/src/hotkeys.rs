@@ -695,6 +695,15 @@ pub fn xkb_key_name(vk: u32) -> Option<String> {
     Some(name.to_owned())
 }
 
+/// Whether a hotkey is Ctrl+Alt+F1..F12, which Linux reserves for switching to the text consoles (xkb turns it into
+/// XF86Switch_VT_n before any app sees it). Such a key can't work as a hotkey there, and pressing it leaves the desktop
+/// for a black console, so the Linux front end refuses to bind it.
+pub fn is_vt_switch_combo(combined: u32) -> bool {
+    let m = extract_modifiers(combined);
+    let vk = extract_vk(combined);
+    m & MOD_CONTROL != 0 && m & MOD_ALT != 0 && (VK_F1..VK_F1 + 12).contains(&vk)
+}
+
 /// Modifier names for a combined key, in Hyprland's spelling (SUPER/SHIFT/CTRL/ALT).
 pub fn modifier_names(combined: u32) -> Vec<&'static str> {
     let m = extract_modifiers(combined);
@@ -878,5 +887,14 @@ mod tests {
         assert_eq!(xkb_key_name(VK_NUMPAD0 + 7).as_deref(), Some("KP_7"));
         assert_eq!(xkb_key_name(VK_XBUTTON2).as_deref(), Some("mouse:276"));
         assert_eq!(modifier_names(combine_key(VK_F1, MOD_CONTROL | MOD_SHIFT)), vec!["CTRL", "SHIFT"]);
+    }
+
+    #[test]
+    fn vt_switch_combos_are_detected() {
+        assert!(is_vt_switch_combo(combine_key(VK_F1 + 10, MOD_CONTROL | MOD_ALT)));
+        assert!(is_vt_switch_combo(combine_key(VK_F1, MOD_CONTROL | MOD_ALT | MOD_SHIFT)));
+        assert!(!is_vt_switch_combo(combine_key(VK_F1 + 12, MOD_CONTROL | MOD_ALT)), "F13 has no console");
+        assert!(!is_vt_switch_combo(combine_key(VK_F1 + 10, MOD_CONTROL | MOD_SHIFT)));
+        assert!(!is_vt_switch_combo(combine_key(b'A' as u32, MOD_CONTROL | MOD_ALT)));
     }
 }
