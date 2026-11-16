@@ -10,9 +10,13 @@ use eve_maj_core::display_grid::Rect;
 use eve_maj_core::log::Scope;
 use serde_json::Value;
 
-use super::backend::{Monitor, Toplevel, WindowId, WindowManager, WmEvent};
+use super::backend::{KeyBind, Monitor, Toplevel, WindowId, WindowManager, WmEvent};
 
 const SLOG: Scope = Scope::new("hyprland");
+/// Prefix of our custom events and Lua globals, so our binds never collide with the user's.
+const EVENT_PREFIX: &str = "eve-maj:";
+/// Where minimized clients are parked.
+const MINIMIZE_WORKSPACE: &str = "special:evemaj";
 
 pub struct HyprlandWm {
     request_path: PathBuf,
@@ -20,6 +24,8 @@ pub struct HyprlandWm {
     event_buf: String,
     /// Hyprland 0.57+ with a Lua config takes `hl.dsp.*` dispatchers instead of the classic `name args` form; learned on first use.
     lua_dispatch: std::cell::Cell<Option<bool>>,
+    /// Binds registered with the classic `keyword bind` (older Hyprland), kept so `keyword unbind` can remove exactly them.
+    classic_binds: Vec<(String, String)>,
 }
 
 impl HyprlandWm {
@@ -32,7 +38,7 @@ impl HyprlandWm {
         if events.is_none() {
             SLOG.warn(format_args!("No Hyprland event socket; window changes are picked up by periodic rescans only"));
         }
-        Some(HyprlandWm { request_path: dir.join(".socket.sock"), events, event_buf: String::new(), lua_dispatch: std::cell::Cell::new(None) })
+        Some(HyprlandWm { request_path: dir.join(".socket.sock"), events, event_buf: String::new(), lua_dispatch: std::cell::Cell::new(None), classic_binds: Vec::new() })
     }
 
     fn request(&self, command: &str) -> Option<String> {
@@ -67,6 +73,35 @@ impl HyprlandWm {
         SLOG.warn(format_args!("dispatch failed in both syntaxes: {replies:?}"));
     }
 
+    /// Runs Lua inside Hyprland (0.57+ with a Lua config); None if this Hyprland has no `eval`.
+    fn eval(&self, lua: &str) -> Option<bool> {
+        let reply = self.request(&format!("eval {lua}"))?;
+        if reply.starts_with("unknown request") {
+            return None;
+        }
+        if reply != "ok" {
+            SLOG.warn(format_args!("eval failed: {reply}"));
+        }
+        Some(reply == "ok")
+    }
+
+    fn uses_lua(&self) -> bool {
+        if let Some(known) = self.lua_dispatch.get() {
+            return known;
+        }
+        let lua = self.eval("return true").is_some();
+        self.lua_dispatch.set(Some(lua));
+        lua
+    }
+
+    /// Workspace selector for whatever the focused monitor is showing (id for numbered workspaces, else its name).
+    fn current_workspace(&self) -> Option<(String, String)> {
+        let v = self.request_json("j/activeworkspace")?;
+        let id = int(&v, "id");
+        let name = string(&v, "name");
+        Some(if id > 0 { (id.to_string(), id.to_string()) } else { (format!("name:{name}"), format!("\"{}\"", lua_escape(&name))) })
+    }
+
     fn raw_monitors(&self) -> Vec<(Monitor, i64, String)> {
         let Some(Value::Array(list)) = self.request_json("j/monitors") else { return Vec::new() };
         let mut out: Vec<(Monitor, i64, String)> = list.iter().map(parse_monitor).collect();
@@ -79,7 +114,8 @@ impl HyprlandWm {
         match name {
             "activewindowv2" => Some(WmEvent::Focus(parse_address(data).filter(|&a| a != 0))),
             "openwindow" | "closewindow" | "windowtitlev2" | "movewindowv2" | "changefloatingmode" | "monitoradded" | "monitorremoved" | "monitoraddedv2"
-            | "monitorremovedv2" | "activespecial" | "activespecialv2" | "fullscreen" | "workspacev2" | "configreloaded" => Some(WmEvent::Changed),
+            | "monitorremovedv2" | "activespecial" | "activespecialv2" | "fullscreen" | "workspacev2" => Some(WmEvent::ConfigReloaded),
+            "custom" => data.strip_prefix(EVENT_PREFIX).and_then(|id| id.parse().ok()).map(WmEvent::Hotkey),
             _ => None,
         }
     }
@@ -97,7 +133,8 @@ impl WindowManager for HyprlandWm {
     fn toplevels(&self) -> Vec<Toplevel> {
         let Some(Value::Array(list)) = self.request_json("j/clients") else { return Vec::new() };
         // Hyprland has no minimize; a window parked on a special workspace that no monitor is showing is the closest thing.
-        let shown_specials: Vec<String> = self.raw_monitors().into_iter().map(|(_, _, special)| special).filter(|s| !s.is_empty()).collect();
+        let monitors = self.raw_monitors();
+        let shown_specials: Vec<&str> = monitors.iter().map(|(_, _, special)| special.as_str()).filter(|s| !s.is_empty()).collect();
         list.iter()
             .filter(|v| v.get("mapped").and_then(Value::as_bool).unwrap_or(false))
             .filter_map(|v| {
@@ -108,7 +145,10 @@ impl WindowManager for HyprlandWm {
                     class: string(v, "class"),
                     initial_class: string(v, "initialClass"),
                     pid: int(v, "pid") as i32,
-                    minimized: workspace.starts_with("special") && !shown_specials.contains(&workspace),
+                    minimized: workspace.starts_with("special") && !shown_specials.contains(&workspace.as_str()),
+                    at: pair(v, "at"),
+                    floating: v.get("floating").and_then(Value::as_bool).unwrap_or(false),
+                    monitor: monitors.iter().find(|(_, id, _)| *id == int(v, "monitor")).map(|(m, _, _)| m.name.clone()).unwrap_or_default(),
                 })
             })
             .collect()
@@ -121,6 +161,74 @@ impl WindowManager for HyprlandWm {
 
     fn focus(&self, id: WindowId) {
         self.dispatch(&format!("focuswindow address:0x{id:x}"), &format!("hl.dsp.focus({{ window = \"address:0x{id:x}\" }})"));
+    }
+
+    fn set_hotkeys(&mut self, binds: &[KeyBind]) -> usize {
+        if self.uses_lua() {
+            // Our binds live in a Lua table so we can unbind exactly them (hl.unbind by key would also drop the user's own).
+            self.eval("_G.evemaj = _G.evemaj or {}; for _, b in pairs(_G.evemaj) do b:unbind() end; _G.evemaj = {}");
+            let mut ok = 0;
+            for b in binds {
+                let keys = b.modifiers.iter().copied().chain(std::iter::once(b.key.as_str())).collect::<Vec<_>>().join(" + ");
+                let lua = format!(
+                    "_G.evemaj[{id}] = hl.bind(\"{keys}\", hl.dsp.event(\"{EVENT_PREFIX}{id}\"), {{ repeating = {rep}, description = \"EVE-Maj: {desc}\" }})",
+                    id = b.id,
+                    keys = lua_escape(&keys),
+                    rep = b.repeating,
+                    desc = lua_escape(&b.description),
+                );
+                if self.eval(&lua) == Some(true) {
+                    ok += 1;
+                } else {
+                    SLOG.err(format_args!("Couldn't bind {keys} ({})", b.description));
+                }
+            }
+            return ok;
+        }
+        for (mods, key) in std::mem::take(&mut self.classic_binds) {
+            self.request(&format!("keyword unbind {mods},{key}"));
+        }
+        let mut ok = 0;
+        for b in binds {
+            let mods = b.modifiers.join(" ");
+            let kind = if b.repeating { "binde" } else { "bind" };
+            if self.request(&format!("keyword {kind} {mods},{},event,{EVENT_PREFIX}{}", b.key, b.id)).as_deref() == Some("ok") {
+                self.classic_binds.push((mods, b.key.clone()));
+                ok += 1;
+            } else {
+                SLOG.err(format_args!("Couldn't bind {mods} {} ({})", b.key, b.description));
+            }
+        }
+        ok
+    }
+
+    fn close(&self, id: WindowId) {
+        self.dispatch(&format!("closewindow address:0x{id:x}"), &format!("hl.dsp.window.close({{ window = \"address:0x{id:x}\" }})"));
+    }
+
+    fn minimize(&self, id: WindowId) {
+        self.dispatch(
+            &format!("movetoworkspacesilent {MINIMIZE_WORKSPACE},address:0x{id:x}"),
+            &format!("hl.dsp.window.move({{ workspace = \"{MINIMIZE_WORKSPACE}\", follow = false, window = \"address:0x{id:x}\" }})"),
+        );
+    }
+
+    fn restore(&self, id: WindowId) {
+        if let Some((classic_ws, lua_ws)) = self.current_workspace() {
+            self.dispatch(
+                &format!("movetoworkspacesilent {classic_ws},address:0x{id:x}"),
+                &format!("hl.dsp.window.move({{ workspace = {lua_ws}, follow = false, window = \"address:0x{id:x}\" }})"),
+            );
+        }
+        self.focus(id);
+    }
+
+    fn move_to(&self, id: WindowId, x: i32, y: i32) {
+        let floating = self.toplevels().into_iter().find(|t| t.id == id).is_some_and(|t| t.floating);
+        if !floating {
+            self.dispatch(&format!("setfloating address:0x{id:x}"), &format!("hl.dsp.window.float({{ action = \"enable\", window = \"address:0x{id:x}\" }})"));
+        }
+        self.dispatch(&format!("movewindowpixel exact {x} {y},address:0x{id:x}"), &format!("hl.dsp.window.move({{ x = {x}, y = {y}, window = \"address:0x{id:x}\" }})"));
     }
 
     fn event_fd(&self) -> Option<RawFd> {
@@ -154,6 +262,17 @@ impl WindowManager for HyprlandWm {
             }
         }
         out
+    }
+}
+
+fn lua_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', " ")
+}
+
+fn pair(v: &Value, key: &str) -> (i32, i32) {
+    match v.get(key).and_then(Value::as_array) {
+        Some(a) if a.len() == 2 => (a[0].as_i64().unwrap_or(0) as i32, a[1].as_i64().unwrap_or(0) as i32),
+        _ => (0, 0),
     }
 }
 
@@ -195,6 +314,11 @@ mod tests {
         assert_eq!(id, 1);
         assert_eq!(m.bounds, Rect { left: 100, top: 0, right: 820, bottom: 1280 });
         assert_eq!(m.work_area.top, 40);
+    }
+
+    #[test]
+    fn lua_strings_are_escaped() {
+        assert_eq!(lua_escape(r#"a "b" \ c"#), r#"a \"b\" \\ c"#);
     }
 
     #[test]

@@ -12,9 +12,12 @@
 
 mod backend;
 mod capture;
+mod control;
 mod gpu;
+mod ipc;
 mod overlay;
 mod protocols;
+mod tray;
 mod wm_hyprland;
 
 use std::ffi::c_void;
@@ -40,7 +43,8 @@ use wayland_protocols::wp::cursor_shape::v1::client::{wp_cursor_shape_device_v1:
 use wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1;
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1::{self, ZwlrLayerShellV1}, zwlr_layer_surface_v1::{self, ZwlrLayerSurfaceV1}};
 
-use backend::{Monitor, TrackedWindow, WindowId, WindowManager, WmEvent};
+use backend::{Monitor, Toplevel, TrackedWindow, WindowId, WindowManager, WmEvent};
+use eve_maj_core::hotkeys::HotkeyManager;
 use capture::{Capture, CaptureProtocol};
 use protocols::hyprland_toplevel_export::hyprland_toplevel_export_manager_v1::HyprlandToplevelExportManagerV1;
 
@@ -88,6 +92,8 @@ fn parse_args() -> Result<Options, String> {
                 o.fps = args.get(i + 1).and_then(|v| v.parse().ok()).filter(|&v| v > 0).ok_or("--fps requires a positive number")?;
                 i += 1;
             }
+            "--protocol" => i += 1, // handled by ipc::url_from_args
+            a if a.starts_with("evemajpreview://") => {}
             "--no-dmabuf" => o.no_dmabuf = true,
             "--linear" => o.linear = true,
             "--help" | "-h" => {
@@ -106,8 +112,26 @@ fn parse_args() -> Result<Options, String> {
     Ok(o)
 }
 
+/// SIGINT and SIGTERM.
+fn termination_signals() -> libc::sigset_t {
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGINT);
+        libc::sigaddset(&mut set, libc::SIGTERM);
+        set
+    }
+}
+
 fn run() -> Result<(), String> {
+    // Blocked before any thread exists (GL, fontconfig and the tray's D-Bus threads inherit the mask); otherwise the
+    // kernel may deliver the signal to one of those threads and kill the process without our cleanup.
+    unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &termination_signals(), std::ptr::null_mut()) };
     let opts = parse_args()?;
+    // A link click starts a second process; hand the link to the running one and exit, like the Windows build.
+    if let Some(url) = ipc::url_from_args() {
+        return if ipc::forward(&url) { Ok(()) } else { Err(format!("no running instance to handle {url}")) };
+    }
     let dir = config_dir();
     std::fs::create_dir_all(dir.join("profiles")).map_err(|e| format!("can't create {}: {e}", dir.display()))?;
     std::env::set_current_dir(&dir).map_err(|e| format!("can't enter {}: {e}", dir.display()))?;
@@ -128,6 +152,14 @@ fn run() -> Result<(), String> {
     config.log_settings();
 
     overlay::register_bundled_fonts(&dir.join("fonts"));
+    let listener = match ipc::Listener::bind() {
+        Ok(l) => l,
+        Err(ipc::BindError::AlreadyRunning) => return Err("EVE-Maj Preview is already running".into()),
+        Err(ipc::BindError::Io(e)) => return Err(format!("can't create the instance socket: {e}")),
+    };
+    if global_settings.auto_register_protocol {
+        ipc::register_protocol_handler();
+    }
 
     // Hyprland is the only window manager/capture backend so far; see backend.rs for what another one needs.
     let wm: Box<dyn WindowManager> = Box::new(wm_hyprland::HyprlandWm::connect().ok_or("this build supports Hyprland only (HYPRLAND_INSTANCE_SIGNATURE is unset)")?);
@@ -185,10 +217,22 @@ fn run() -> Result<(), String> {
         eve_focus_lost_at: None,
         pointer_state: PointerState::default(),
         ctrl: false,
+        shift: false,
         scan_needed: true,
         tick: 0,
         profile_mtime,
+        global_settings,
+        hotkeys: HotkeyManager::default(),
+        last_non_eve: None,
+        notified: Vec::new(),
+        pending_moves: Vec::new(),
+        last_focused_by_monitor: std::collections::HashMap::new(),
+        toplevels: Vec::new(),
+        ipc: Some(listener),
+        tray: None,
+        exit_requested: false,
     };
+    app.tray = tray::Tray::spawn(app.tray_state());
     queue.roundtrip(&mut app).map_err(|e| format!("roundtrip: {e}"))?;
 
     app.run_loop(&mut queue, &conn, opts.fps)
@@ -244,6 +288,10 @@ struct Thumb {
     overlay_tex: Option<glow::Texture>,
     needs_render: bool,
     needs_draw: bool,
+    /// When this client last stopped being focused or minimized (auto-minimize's delay).
+    inactive_since: u64,
+    /// When this client went back to the login screen (not-logged-in cycling order).
+    logged_out_at: u64,
 }
 
 #[derive(Default)]
@@ -294,9 +342,24 @@ struct App {
     eve_focus_lost_at: Option<u64>,
     pointer_state: PointerState,
     ctrl: bool,
+    shift: bool,
     scan_needed: bool,
     tick: u64,
     profile_mtime: Option<std::time::SystemTime>,
+    global_settings: GlobalSettings,
+    hotkeys: HotkeyManager<WindowId>,
+    /// Last focused window that isn't an EVE client (return-to-last-app hotkey).
+    last_non_eve: Option<WindowId>,
+    /// Characters notified recently, oldest first (notified-character cycling).
+    notified: Vec<(String, u64)>,
+    pending_moves: Vec<control::PendingMove>,
+    /// Last EVE client focused on each monitor (auto-minimize's exemption).
+    last_focused_by_monitor: std::collections::HashMap<String, WindowId>,
+    /// Every toplevel from the last scan (positions, monitors, processes).
+    toplevels: Vec<Toplevel>,
+    ipc: Option<ipc::Listener>,
+    tray: Option<tray::Tray>,
+    exit_requested: bool,
 }
 
 fn timerfd(interval_ms: u64) -> i32 {
@@ -317,19 +380,20 @@ fn drain_timerfd(fd: i32) {
 impl App {
     fn run_loop(&mut self, queue: &mut EventQueue<App>, conn: &Connection, fps: u32) -> Result<(), String> {
         SLOG.info(format_args!("Window manager: {}, capture: {}", self.wm.name(), self.capture.name()));
-        // SIGINT/SIGTERM arrive on a signalfd, so shutdown runs through the normal teardown and flushes the log.
-        let signal_fd = unsafe {
-            let mut set: libc::sigset_t = std::mem::zeroed();
-            libc::sigemptyset(&mut set);
-            libc::sigaddset(&mut set, libc::SIGINT);
-            libc::sigaddset(&mut set, libc::SIGTERM);
-            libc::sigprocmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
-            libc::signalfd(-1, &set, libc::SFD_CLOEXEC | libc::SFD_NONBLOCK)
-        };
+        // SIGINT/SIGTERM arrive on a signalfd (blocked process-wide in run()), so shutdown runs the normal teardown: unbinding hotkeys, flushing the log.
+        let signal_fd = unsafe { libc::signalfd(-1, &termination_signals(), libc::SFD_CLOEXEC | libc::SFD_NONBLOCK) };
         let tick_fd = timerfd(self.config.timer.scan_interval_ms.max(10) as u64);
         let capture_fd = timerfd((1000 / fps.max(1)).max(1) as u64);
 
         self.sync_windows();
+        self.hotkeys.rebuild(&self.config, &self.global_settings);
+        for i in 0..self.thumbs.len() {
+            self.thumbs[i].excluded = self.hotkeys.is_character_excluded(&self.config, &self.thumbs[i].name);
+        }
+        self.register_hotkeys();
+        if self.config.auto_move_position.move_on_startup {
+            self.move_all_clients_to_saved_positions();
+        }
         loop {
             queue.dispatch_pending(self).map_err(|e| format!("Wayland: {e}"))?;
             queue.flush().map_err(|e| format!("Wayland flush: {e}"))?;
@@ -338,16 +402,23 @@ impl App {
                 None => continue,
             };
             let wl_fd = guard.connection_fd().as_raw_fd();
-            let ev_fd = self.wm.event_fd().unwrap_or(-1);
-            let mut fds = [
+            // Fixed slots first, then whichever optional sources exist.
+            let mut fds = vec![
                 libc::pollfd { fd: wl_fd, events: libc::POLLIN, revents: 0 },
                 libc::pollfd { fd: tick_fd, events: libc::POLLIN, revents: 0 },
                 libc::pollfd { fd: capture_fd, events: libc::POLLIN, revents: 0 },
                 libc::pollfd { fd: signal_fd, events: libc::POLLIN, revents: 0 },
-                libc::pollfd { fd: ev_fd, events: libc::POLLIN, revents: 0 },
             ];
-            let n = if ev_fd >= 0 { 5 } else { 4 };
-            let r = unsafe { libc::poll(fds.as_mut_ptr(), n, -1) };
+            let mut slot = |fd: Option<i32>| {
+                fd.map(|fd| {
+                    fds.push(libc::pollfd { fd, events: libc::POLLIN, revents: 0 });
+                    fds.len() - 1
+                })
+            };
+            let wm_slot = slot(self.wm.event_fd());
+            let ipc_slot = slot(self.ipc.as_ref().map(|l| l.fd()));
+            let tray_slot = slot(self.tray.as_ref().map(|t| t.fd()));
+            let r = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
             if r < 0 {
                 drop(guard);
                 if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
@@ -366,23 +437,46 @@ impl App {
                 return Err("Wayland connection closed".into());
             }
             queue.dispatch_pending(self).map_err(|e| format!("Wayland: {e}"))?;
+            let ready = |slot: Option<usize>| slot.is_some_and(|i| fds[i].revents & (libc::POLLIN | libc::POLLHUP) != 0);
 
-            if fds[3].revents & libc::POLLIN != 0 {
+            if wm_slot.is_some() && ready(wm_slot) {
+                for event in self.wm.read_events() {
+                    match event {
+                        WmEvent::Focus(window) => self.set_active(window),
+                        WmEvent::Changed => self.scan_needed = true,
+                        WmEvent::Hotkey(id) => self.on_hotkey(id),
+                        WmEvent::ConfigReloaded => {
+                            // A config reload drops runtime binds.
+                            self.register_hotkeys();
+                            self.scan_needed = true;
+                        }
+                    }
+                }
+            }
+            if ready(ipc_slot) {
+                let urls = self.ipc.as_ref().map(|l| l.accept_all()).unwrap_or_default();
+                for url in urls {
+                    self.on_protocol_url(&url);
+                }
+            }
+            if ready(tray_slot) {
+                let commands = self.tray.as_ref().map(|t| t.drain()).unwrap_or_default();
+                for cmd in commands {
+                    self.on_tray_command(cmd);
+                }
+            }
+            if fds[3].revents & libc::POLLIN != 0 || self.exit_requested {
                 SLOG.info(format_args!("Shutting down"));
+                self.unregister_hotkeys();
+                if let Some(t) = self.tray.take() {
+                    t.shutdown();
+                }
                 let thumbs = std::mem::take(&mut self.thumbs);
                 for t in thumbs {
                     self.destroy_thumb(t);
                 }
                 let _ = queue.flush();
                 return Ok(());
-            }
-            if n == 5 && fds[4].revents & (libc::POLLIN | libc::POLLHUP) != 0 {
-                for event in self.wm.read_events() {
-                    match event {
-                        WmEvent::Focus(window) => self.set_active(window),
-                        WmEvent::Changed => self.scan_needed = true,
-                    }
-                }
             }
             if fds[1].revents & libc::POLLIN != 0 {
                 drain_timerfd(tick_fd);
@@ -410,7 +504,12 @@ impl App {
         }
         self.expire_notifications();
         self.apply_hide_when_no_eve_focus();
+        self.check_auto_minimize();
+        self.verify_pending_moves();
         self.render_dirty();
+        if self.tick % 5 == 0 {
+            self.refresh_tray();
+        }
     }
 
     // ------------------------------------------------------------------------------------------ window tracking --
@@ -419,7 +518,8 @@ impl App {
         let monitors = self.wm.monitors();
         let monitors_changed = monitors.iter().map(|m| (&m.name, m.bounds)).ne(self.monitors.iter().map(|m| (&m.name, m.bounds)));
         self.monitors = monitors;
-        let windows = backend::tracked_windows(&self.wm.toplevels(), &self.config.window_filters);
+        self.toplevels = self.wm.toplevels();
+        let windows = backend::tracked_windows(&self.toplevels, &self.config.window_filters);
         if self.active.is_none() {
             self.active = self.wm.active();
         }
@@ -463,6 +563,9 @@ impl App {
             }
             self.create_thumb(w);
             needs_reflow |= managed;
+            if self.config.auto_move_position.enabled {
+                self.move_client_to_saved_position(w.id, &w.character_name);
+            }
         }
 
         if needs_reflow {
@@ -508,6 +611,15 @@ impl App {
             t.system_name.clear();
             t.system_color = self.config.thumbnail.system_name_color;
             t.notifications.clear();
+            t.logged_out_at = now_ms();
+        }
+        if was_generic && !now_generic {
+            // Exclusion is per character, so it comes back with the login; same for the auto-move-on-login setting.
+            self.thumbs[i].excluded = self.hotkeys.is_character_excluded(&self.config, new_name);
+            if self.config.auto_move_position.enabled {
+                let window = self.thumbs[i].window;
+                self.move_client_to_saved_position(window, new_name);
+            }
         }
         let login = was_generic && !now_generic;
         let logout = now_generic && !was_generic;
@@ -592,8 +704,11 @@ impl App {
             overlay_tex: None,
             needs_render: true,
             needs_draw: false,
+            inactive_since: now_ms(),
+            logged_out_at: now_ms(),
         });
         let i = self.thumbs.len() - 1;
+        self.thumbs[i].excluded = self.hotkeys.is_character_excluded(&self.config, &w.character_name);
         self.refresh_character_caches(i);
         SLOG.info(format_args!("Created thumbnail for {} at ({}, {}) {}x{}", w.character_name, rect.x, rect.y, rect.width, rect.height));
     }
@@ -651,6 +766,7 @@ impl App {
         }
         let old = self.active;
         self.active = new_active;
+        self.on_focus_changed(new_active);
         for t in &mut self.thumbs {
             if Some(t.window) == old || Some(t.window) == new_active {
                 t.needs_render = true;
@@ -715,14 +831,7 @@ impl App {
         match Config::load_profile(&self.config.profile_name) {
             Ok(c) => {
                 SLOG.info(format_args!("Profile {} changed on disk, reloading", c.profile_name));
-                self.config = c;
-                self.membership = accounts_store::load_membership();
-                for i in 0..self.thumbs.len() {
-                    self.refresh_character_caches(i);
-                    self.set_click_through(i);
-                }
-                self.reflow();
-                self.scan_needed = true;
+                self.apply_new_config(c);
             }
             Err(e) => SLOG.warn(format_args!("Profile changed but failed to load: {e}")),
         }
@@ -925,16 +1034,13 @@ impl App {
 
     fn on_click(&mut self, id: u64) {
         let Some(i) = self.thumb_index(id) else { return };
-        let window = self.thumbs[i].window;
-        // Shift+click exclusion needs the hotkey manager (next milestone); until then it's a plain click, as on Windows with exclusion disabled.
-        self.wm.focus(window);
-        let t = &mut self.thumbs[i];
-        let before = t.notifications.len();
-        t.notifications.retain(|n| !n.suppress_when_clicked);
-        if t.notifications.len() != before {
-            t.needs_render = true;
+        if self.shift && self.config.exclusion.enable_shift_click_exclude {
+            self.toggle_exclusion(i);
+            self.render_dirty();
+            return;
         }
-        self.set_active(Some(window));
+        let window = self.thumbs[i].window;
+        self.activate_window(window);
     }
 
     fn start_drag(&mut self, id: u64) {
@@ -1152,9 +1258,10 @@ impl Dispatch<WlSeat, ()> for App {
 
 impl Dispatch<WlKeyboard, ()> for App {
     fn event(state: &mut Self, _: &WlKeyboard, event: wayland_client::protocol::wl_keyboard::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
-        // xkb's standard modifier bit for Control.
+        // xkb's standard modifier bits: Shift = 0x1, Control = 0x4.
         if let wayland_client::protocol::wl_keyboard::Event::Modifiers { mods_depressed, .. } = event {
             state.ctrl = mods_depressed & 0x4 != 0;
+            state.shift = mods_depressed & 0x1 != 0;
         }
     }
 }

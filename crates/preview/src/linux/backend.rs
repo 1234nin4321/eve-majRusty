@@ -49,6 +49,11 @@ pub struct Toplevel {
     pub initial_class: String,
     pub pid: i32,
     pub minimized: bool,
+    /// Top-left in layout coordinates.
+    pub at: (i32, i32),
+    pub floating: bool,
+    /// Monitor (connector name) the window is on.
+    pub monitor: String,
 }
 
 /// What a window manager's event stream reported.
@@ -58,6 +63,22 @@ pub enum WmEvent {
     Focus(Option<WindowId>),
     /// Something that can change the window list, titles, monitors or minimized state; rescan.
     Changed,
+    /// One of our registered hotkeys was pressed.
+    Hotkey(u32),
+    /// The compositor reloaded its config, dropping runtime binds; register them again.
+    ConfigReloaded,
+}
+
+/// A hotkey to bind in the compositor: xkb key name (or mouse button) plus modifier names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyBind {
+    pub id: u32,
+    /// SUPER/CTRL/ALT/SHIFT.
+    pub modifiers: Vec<&'static str>,
+    /// xkb key name ("F12", "Prior", "KP_7") or a mouse button ("mouse:275", "mouse_up").
+    pub key: String,
+    pub repeating: bool,
+    pub description: String,
 }
 
 pub trait WindowManager {
@@ -74,6 +95,17 @@ pub trait WindowManager {
     fn event_fd(&self) -> Option<RawFd>;
     /// Drains pending events without blocking.
     fn read_events(&mut self) -> Vec<WmEvent>;
+
+    /// Replaces every hotkey we registered with `binds`; presses arrive as [`WmEvent::Hotkey`]. Returns how many took.
+    fn set_hotkeys(&mut self, binds: &[KeyBind]) -> usize;
+    /// Closes a window the way its close button would.
+    fn close(&self, id: WindowId);
+    /// Hides a window the way minimizing does on Windows.
+    fn minimize(&self, id: WindowId);
+    /// Undoes [`WindowManager::minimize`] onto the current workspace and focuses the window.
+    fn restore(&self, id: WindowId);
+    /// Places a window's top-left at (x, y) in layout coordinates, floating it first if the layout tiles it.
+    fn move_to(&self, id: WindowId, x: i32, y: i32);
 }
 
 /// The Windows-side image path of a Wine/Proton process (argv[0], e.g. `C:\EVE\...\exefile.exe`), else the native executable.
@@ -134,7 +166,7 @@ mod tests {
     use super::*;
 
     fn toplevel(class: &str, title: &str) -> Toplevel {
-        Toplevel { id: 1, title: title.into(), class: class.into(), initial_class: class.into(), pid: 0, minimized: false }
+        Toplevel { id: 1, title: title.into(), class: class.into(), initial_class: class.into(), pid: 0, minimized: false, at: (0, 0), floating: false, monitor: String::new() }
     }
 
     #[test]

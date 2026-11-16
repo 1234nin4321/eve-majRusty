@@ -37,10 +37,11 @@ On Windows, `cargo build --release --target x86_64-pc-windows-gnu` (or `-msvc`) 
 `eve-maj-preview` also runs natively on Linux under [Hyprland](https://hyprland.org). Each thumbnail is a
 wlr-layer-shell overlay (so it stays above fullscreen clients); Hyprland renders the EVE window straight into a GPU
 buffer (`hyprland-toplevel-export-v1` + dmabuf) that is drawn into the thumbnail without passing through the CPU, with
-the same text/border overlay as on Windows. Layout and styling come from the same `core` code, so profiles behave the same.
+the same text/border overlay as on Windows. Layout, styling and hotkey logic come from the same `core` code, so profiles
+behave the same.
 
 ```sh
-sudo pacman -S --needed rust wayland mesa libdrm cairo pango   # Arch; any distro with these dev libs works
+sudo pacman -S --needed rust wayland mesa libdrm cairo pango xdg-utils wl-clipboard   # Arch; any distro with these works
 cargo linux                                                    # = build --release for x86_64-unknown-linux-gnu
 ./target/x86_64-unknown-linux-gnu/release/eve-maj-preview      # --profile NAME.json, --fps N (default 30)
 ```
@@ -49,15 +50,26 @@ cargo linux                                                    # = build --relea
   .exe). Edits to the active profile's JSON are picked up while it runs.
 - EVE clients are found by the default window filter: the Wine/Proton process image `exefile.exe` (or a window class
   of that name). A filter's `class_names` also match Hyprland window classes, e.g. `steam_app_8500`.
-- Left-click focuses a client, right-drag moves a thumbnail, Ctrl+right-drag moves them all. `display.monitorIndex`
-  counts Hyprland monitors by id; with none set, `startX`/`startY` are relative to monitor 0.
-- Clients on a special workspace that isn't shown count as minimized.
+- Left-click focuses a client, right-drag moves a thumbnail, Ctrl+right-drag moves them all, Shift+click toggles
+  cycle exclusion. `display.monitorIndex` counts Hyprland monitors by id; with none set, `startX`/`startY` are relative
+  to monitor 0.
+- **Hotkeys**: every hotkey from the profile and `global.settings.json` (groups, per-character, account keys, profile
+  switching, cycling, minimize/close all, suspend, app and URL keys, mouse side buttons) is registered as a Hyprland
+  bind while the app runs and removed when it exits. They show up in `hyprctl binds` as "EVE-Maj: ...".
+- **Minimize** parks a client on the hidden `special:evemaj` workspace; clicking its thumbnail or cycling to it brings
+  it back to the current workspace. Clients on a special workspace that isn't shown count as minimized.
+- **Auto-move** floats a client and moves it to its saved window position. Save the current positions from the tray
+  ("Save Client Window Positions"); on Windows the config dialog does this.
+- **Tray icon** (any StatusNotifierItem host: Waybar, KDE, ...): profiles, dragging/auto-minimize/travel/visibility
+  toggles, restore positions, suspend hotkeys, close all, exit.
+- **`evemajpreview://` links** work like on Windows: the app registers itself as the handler (`autoRegisterProtocol`),
+  and a second start with a link (`eve-maj-preview --protocol URL`, or `xdg-open URL`) forwards it to the running instance.
 - Optional `hyprland.conf` rule: `layerrule = noanim, eve-maj-preview`.
 - Thumbnail refresh rate is `--fps` (default 30): unlike DWM, every refresh is a GPU copy done by Hyprland, so lower it
   if you run many clients.
 
-Not on Linux yet: hotkeys and groups, tray, `evemajpreview://` links, chatlog-driven notifications and overlays, the
-list/history panels, region selection and the config dialog.
+Not on Linux yet: chatlog-driven notifications and overlays, the list/history panels, region selection and the config
+dialog.
 
 ## License
 

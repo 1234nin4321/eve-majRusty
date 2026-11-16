@@ -22,3 +22,4 @@ pub mod display_info;
 pub mod mouse_bindings;
 pub mod layout;
 pub mod render;
+pub mod hotkeys;
