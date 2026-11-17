@@ -6,19 +6,15 @@
 //!
 //! Drawing is plain cairo into wl_shm buffers; a surface is repainted only when what it shows changed.
 
-use std::os::fd::{AsFd, FromRawFd, OwnedFd};
-
 use eve_maj_core::log::Scope;
 use eve_maj_core::protocol::{self, label_text, Rect, RegionSelectRequest, RegionSelectResult};
 use eve_maj_core::render::now_ms;
-use wayland_client::protocol::wl_buffer::{self, WlBuffer};
-use wayland_client::protocol::wl_shm::Format as ShmFormat;
-use wayland_client::protocol::wl_shm_pool::WlShmPool;
 use wayland_client::protocol::wl_surface::WlSurface;
-use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum};
+use wayland_client::{Proxy, WEnum};
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape;
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1::{self, ZwlrLayerSurfaceV1}};
 
+use super::shm::alloc_buffer;
 use super::App;
 
 const SLOG: Scope = Scope::new("region-select");
@@ -263,21 +259,6 @@ fn rounded(cr: &cairo::Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
     cr.arc(x + r, y + h - r, r, std::f64::consts::FRAC_PI_2, std::f64::consts::PI);
     cr.arc(x + r, y + r, r, std::f64::consts::PI, 3.0 * std::f64::consts::FRAC_PI_2);
     cr.close_path();
-}
-
-/// A wl_shm buffer's mapping, unmapped once the compositor releases the buffer.
-pub(super) struct ShmMapping {
-    ptr: usize,
-    len: usize,
-}
-
-impl Dispatch<WlBuffer, ShmMapping> for App {
-    fn event(_: &mut Self, buffer: &WlBuffer, event: wl_buffer::Event, mapping: &ShmMapping, _: &Connection, _: &QueueHandle<Self>) {
-        if let wl_buffer::Event::Release = event {
-            buffer.destroy();
-            unsafe { libc::munmap(mapping.ptr as *mut libc::c_void, mapping.len) };
-        }
-    }
 }
 
 impl App {
@@ -575,30 +556,6 @@ fn write_result(result: RegionSelectResult) {
     let tmp = path.with_extension("json.tmp");
     if let Err(e) = std::fs::write(&tmp, result.to_file_json()).and_then(|_| std::fs::rename(&tmp, &path)) {
         SLOG.err(format_args!("Can't write the region selection result to {}: {e}", path.display()));
-    }
-}
-
-/// A fresh ARGB8888 wl_shm buffer of `w`x`h`, and where its pixels are mapped.
-fn alloc_buffer(app: &App, w: i32, h: i32) -> Option<(WlBuffer, *mut u8)> {
-    let stride = w.checked_mul(4)?;
-    let len = (stride as usize).checked_mul(h as usize)?;
-    unsafe {
-        let fd = libc::memfd_create(c"eve-maj-region".as_ptr(), libc::MFD_CLOEXEC);
-        if fd < 0 {
-            return None;
-        }
-        let owned = OwnedFd::from_raw_fd(fd);
-        if libc::ftruncate(fd, len as i64) < 0 {
-            return None;
-        }
-        let ptr = libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_SHARED, fd, 0);
-        if ptr == libc::MAP_FAILED {
-            return None;
-        }
-        let pool: WlShmPool = app.shm.create_pool(owned.as_fd(), len as i32, &app.qh, ());
-        let buffer = pool.create_buffer(0, w, h, stride, ShmFormat::Argb8888, &app.qh, ShmMapping { ptr: ptr as usize, len });
-        pool.destroy();
-        Some((buffer, ptr as *mut u8))
     }
 }
 

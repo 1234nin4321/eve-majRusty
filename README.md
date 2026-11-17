@@ -11,7 +11,8 @@ existing install's settings carry over.
 >   `config.exe` are not yet.
 > - **Linux (Hyprland):** thumbnails, layouts, hotkeys and groups, minimize/close all, auto-move, tray, `evemajpreview://`
 >   links, chat-log monitoring (system names, notifications, sounds, Travel Mode) and the activity overlays (DPS,
->   mining, bounty, CPU/RAM), the settings window and its region selection work; the panels are not yet. See [Linux (Hyprland)](#linux-hyprland).
+>   mining, bounty, CPU/RAM), the Client List view and History Panel, and the settings window with its region selection
+  work. See [Linux (Hyprland)](#linux-hyprland).
 >
 > Unported settings still load and save, and log a warning when enabled.
 
@@ -81,8 +82,15 @@ cargo linux                                                    # = build --relea
 - **Region selection** ("Drag Select Region" and editing a region in the settings window) dims every monitor: drag a
   rectangle, then drag its edges or inside to adjust; Enter or Save keeps it, Esc, right-click or Cancel drops it. The
   app hands the result back to the settings window through `$XDG_RUNTIME_DIR/eve-maj-region-select.json`.
+- **View modes**: Thumbnails, Client List (a compact panel with one row per client: status dot, name, and the newest
+  notification, live stats or system name) or Nothing (clients are tracked, hotkeys and notifications keep working).
+  Click a list row to focus that client, Shift+click to toggle its cycle exclusion.
+- **History Panel** (`showNotifInfoPanel`): the latest notifications across all characters, with relative times and
+  FLT/MIN/CBT/NAV/GEN filter buttons; click a row to focus that client. It hides while nobody is logged in when
+  `hideNotifInfoPanelWhenNoCharacters` is set. Both panels are dragged by their header, snap like thumbnails, and
+  remember their position when the profile says to.
 - **Tray icon** (any StatusNotifierItem host: Waybar, KDE, ...): settings, profiles, dragging/auto-minimize/travel/visibility
-  toggles, restore positions, suspend hotkeys, close all, exit.
+  toggles, restore positions, show/clear the history panel, suspend hotkeys, close all, exit.
 - **`evemajpreview://` links** work like on Windows: the app registers itself as the handler (`autoRegisterProtocol`),
   and a second start with a link (`eve-maj-preview --protocol URL`, or `xdg-open URL`) forwards it to the running instance.
 - **Chat-log monitoring** (`chatlog.enabled`): system names, notifications (fleet invites, scrams, decloaks, cargo
@@ -97,8 +105,6 @@ cargo linux                                                    # = build --relea
 - Optional `hyprland.conf` rule: `layerrule = noanim, eve-maj-preview`.
 - Thumbnail refresh rate is `--fps` (default 30): unlike DWM, every refresh is a GPU copy done by Hyprland, so lower it
   if you run many clients.
-
-Not on Linux yet: the list/history panels.
 
 ## License
 

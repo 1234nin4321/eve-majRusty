@@ -24,6 +24,7 @@ pub enum TrayCommand {
     RestoreSavedPositions,
     SaveClientPositions,
     ClearNotificationHistory,
+    ToggleHistoryPanel,
     SuspendHotkeys,
     CloseAll,
     Exit,
@@ -38,6 +39,7 @@ pub struct TrayState {
     pub auto_minimize: bool,
     pub travel_mode: bool,
     pub thumbnails_visible: bool,
+    pub history_panel_visible: bool,
     pub has_suspend_hotkey: bool,
     pub hotkeys_suspended: bool,
 }
@@ -112,6 +114,7 @@ impl ksni::Tray for EveTray {
             item("Restore Saved Positions", TrayCommand::RestoreSavedPositions),
             item("Save Client Window Positions", TrayCommand::SaveClientPositions),
             MenuItem::Separator,
+            check("Show History Panel", s.history_panel_visible, TrayCommand::ToggleHistoryPanel),
             item("Clear Notification History", TrayCommand::ClearNotificationHistory),
             MenuItem::Separator,
         ];

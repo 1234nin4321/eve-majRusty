@@ -39,7 +39,7 @@ pub fn register_bundled_fonts(dir: &std::path::Path) {
     }
 }
 
-fn font_description(name: &str, size: i32, weight: FontWeight) -> pango::FontDescription {
+pub(super) fn font_description(name: &str, size: i32, weight: FontWeight) -> pango::FontDescription {
     let mut d = pango::FontDescription::new();
     d.set_family(name);
     d.set_absolute_size((size.max(1) * pango::SCALE) as f64);

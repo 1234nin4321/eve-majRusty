@@ -244,6 +244,9 @@ impl App {
 
         self.notified.retain(|(n, _)| *n != name);
         self.notified.push((name.clone(), now));
+        // Disjoint from the config borrow above, so straight into the history rather than through a method.
+        let (window, color) = (self.thumbs[i].window, self.thumbs[i].character_color);
+        self.panels.history.push(window, &name, color, text, ntype, now);
 
         if tc.tts_enabled {
             let spoken = if notifications.tts_speak_character_name && !name.is_empty() {

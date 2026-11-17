@@ -21,8 +21,10 @@ mod ipc;
 mod keymap;
 mod notify;
 mod overlay;
+mod panels;
 mod protocols;
 mod region_select;
+mod shm;
 mod tray;
 mod wm_hyprland;
 
@@ -243,6 +245,7 @@ fn run() -> Result<(), String> {
         chatlog_warned: false,
         region: None,
         confirm_keys: None,
+        panels: panels::Panels::default(),
     };
     app.tray = tray::Tray::spawn(app.tray_state());
     queue.roundtrip(&mut app).map_err(|e| format!("roundtrip: {e}"))?;
@@ -391,6 +394,8 @@ struct App {
     region: Option<region_select::RegionSelect>,
     /// Which keys are Enter and Escape in the seat's current keymap (None until it arrives or if it can't be read).
     confirm_keys: Option<keymap::ConfirmKeys>,
+    /// The Client List and History Panel.
+    panels: panels::Panels,
 }
 
 fn timerfd(interval_ms: u64) -> i32 {
@@ -900,12 +905,14 @@ impl App {
                 self.render_thumb(i);
             }
         }
+        self.update_panels();
     }
 
     /// The Windows render_thumbnail: resolve the look, show/hide, repaint the overlay only when it changed.
     fn render_thumb(&mut self, i: usize) {
         let state = self.effective_state(&self.thumbs[i]);
-        let hidden_for_region = self.region.as_ref().is_some_and(|r| r.hides_thumbnails());
+        // The Client List and Nothing view modes track clients without showing thumbnails.
+        let hidden_for_region = self.region.as_ref().is_some_and(|r| r.hides_thumbnails()) || self.config.display.view_mode != eve_maj_core::types::ViewMode::Thumbnails;
         let t = &self.thumbs[i];
         let view = ThumbnailView {
             state,
@@ -1251,6 +1258,9 @@ impl Dispatch<WlCallback, u64> for App {
         if *id >= region_select::SURFACE_ID_BASE {
             return state.region_frame_done(*id);
         }
+        if panels::is_panel(*id) {
+            return state.panel_frame_done(*id);
+        }
         let Some(i) = state.thumb_index(*id) else { return };
         if let Some(s) = state.thumbs[i].surf.as_mut() {
             s.frame_pending = false;
@@ -1263,6 +1273,9 @@ impl Dispatch<ZwlrLayerSurfaceV1, u64> for App {
     fn event(state: &mut Self, layer: &ZwlrLayerSurfaceV1, event: zwlr_layer_surface_v1::Event, id: &u64, _: &Connection, _: &QueueHandle<Self>) {
         if *id >= region_select::SURFACE_ID_BASE {
             return state.region_layer_event(*id, event);
+        }
+        if panels::is_panel(*id) {
+            return state.panel_layer_event(*id, event);
         }
         let Some(i) = state.thumb_index(*id) else { return };
         match event {
@@ -1350,19 +1363,30 @@ impl Dispatch<WlPointer, ()> for App {
                 state.apply_hover_cursor(serial);
             }
             Event::Leave { .. } => {
-                if state.pointer_state.drag.is_none() {
+                if state.pointer_state.drag.is_none() && !state.panels.dragging() {
                     state.pointer_state.hover = None;
                 }
                 state.pointer_state.left_pending = None;
             }
             Event::Motion { surface_x, surface_y, .. } => {
                 state.pointer_state.local = (surface_x, surface_y);
-                if state.pointer_state.drag.is_some() {
+                if state.panels.dragging() {
+                    state.panel_drag_motion((surface_x, surface_y));
+                } else if state.pointer_state.drag.is_some() {
                     state.handle_drag_motion();
                 }
             }
             Event::Button { button, state: WEnum::Value(bstate), .. } => {
                 let pressed = bstate == ButtonState::Pressed;
+                if button == BTN_LEFT && !pressed && state.panels.dragging() {
+                    return state.end_panel_drag();
+                }
+                if let Some(id) = state.pointer_state.hover.filter(|&id| panels::is_panel(id)) {
+                    if button == BTN_LEFT && pressed {
+                        state.panel_press(id, state.pointer_state.local);
+                    }
+                    return;
+                }
                 let Some(hover) = state.pointer_state.hover else {
                     if !pressed && button == BTN_RIGHT {
                         state.end_drag();

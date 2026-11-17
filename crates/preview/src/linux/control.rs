@@ -421,6 +421,7 @@ impl App {
             auto_minimize: self.config.auto_minimize.enabled,
             travel_mode: self.config.travel.enabled,
             thumbnails_visible: self.thumbs.first().is_none_or(|t| t.visibility.is_visible()),
+            history_panel_visible: self.history_panel_visible(),
             has_suspend_hotkey: self.config.hotkeys.hotkey_suspend.is_some(),
             hotkeys_suspended: self.hotkeys.is_suspended(),
         }
@@ -458,7 +459,8 @@ impl App {
             TrayCommand::ToggleVisibility => self.toggle_all_thumbnails_visibility(),
             TrayCommand::RestoreSavedPositions => self.move_all_clients_to_saved_positions(),
             TrayCommand::SaveClientPositions => self.save_client_window_positions(),
-            TrayCommand::ClearNotificationHistory => self.notified.clear(),
+            TrayCommand::ClearNotificationHistory => self.clear_notification_history(),
+            TrayCommand::ToggleHistoryPanel => self.toggle_history_panel(),
             TrayCommand::SuspendHotkeys => self.run_link_action(eve_maj_core::protocol::HotkeyAction::SuspendHotkeys),
             TrayCommand::CloseAll => self.close_all_clients(),
             TrayCommand::Exit => self.exit_requested = true,
