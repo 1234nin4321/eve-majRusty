@@ -51,7 +51,8 @@ impl App {
                 }
             }
             Command::Switch(name) => self.on_protocol_url(&format!("evemajpreview://switch/{}", String::from_utf8_lossy(&name))),
-            Command::Hotkey(_) | Command::StartRegionSelect(_) => SLOG.debug(format_args!("Dialog command not supported on Linux yet")),
+            Command::StartRegionSelect(request) => self.start_region_select(*request),
+            Command::Hotkey(_) => SLOG.debug(format_args!("Dialog command not supported on Linux yet")),
         }
         self.render_dirty();
         self.refresh_tray();

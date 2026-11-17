@@ -11,7 +11,7 @@ existing install's settings carry over.
 >   `config.exe` are not yet.
 > - **Linux (Hyprland):** thumbnails, layouts, hotkeys and groups, minimize/close all, auto-move, tray, `evemajpreview://`
 >   links, chat-log monitoring (system names, notifications, sounds, Travel Mode) and the activity overlays (DPS,
->   mining, bounty, CPU/RAM) and the settings window work; the panels and region selection are not yet. See [Linux (Hyprland)](#linux-hyprland).
+>   mining, bounty, CPU/RAM), the settings window and its region selection work; the panels are not yet. See [Linux (Hyprland)](#linux-hyprland).
 >
 > Unported settings still load and save, and log a warning when enabled.
 
@@ -76,8 +76,11 @@ cargo linux                                                    # = build --relea
 - **Settings window** (`eve-maj-config`): the same settings dialog as on Windows (its HTML/CSS/JS, every tab and
   language), in a native WebKitGTK window. Open it from the tray (click the icon, or Settings…) or run it directly.
   Saving updates the running app; live preview, Test Notification, profile switching and pausing hotkeys while a key
-  is being recorded all reach the running app over its instance socket. Not yet on Linux: region selection, Identify
-  displays and in-app updates. `runOnStartup` writes an XDG autostart entry.
+  is being recorded all reach the running app over its instance socket. Not yet on Linux: Identify displays and in-app
+  updates. `runOnStartup` writes an XDG autostart entry.
+- **Region selection** ("Drag Select Region" and editing a region in the settings window) dims every monitor: drag a
+  rectangle, then drag its edges or inside to adjust; Enter or Save keeps it, Esc, right-click or Cancel drops it. The
+  app hands the result back to the settings window through `$XDG_RUNTIME_DIR/eve-maj-region-select.json`.
 - **Tray icon** (any StatusNotifierItem host: Waybar, KDE, ...): settings, profiles, dragging/auto-minimize/travel/visibility
   toggles, restore positions, suspend hotkeys, close all, exit.
 - **`evemajpreview://` links** work like on Windows: the app registers itself as the handler (`autoRegisterProtocol`),
@@ -95,7 +98,7 @@ cargo linux                                                    # = build --relea
 - Thumbnail refresh rate is `--fps` (default 30): unlike DWM, every refresh is a GPU copy done by Hyprland, so lower it
   if you run many clients.
 
-Not on Linux yet: the list/history panels and region selection.
+Not on Linux yet: the list/history panels.
 
 ## License
 

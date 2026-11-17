@@ -18,9 +18,11 @@ mod control;
 mod dialog;
 mod gpu;
 mod ipc;
+mod keymap;
 mod notify;
 mod overlay;
 mod protocols;
+mod region_select;
 mod tray;
 mod wm_hyprland;
 
@@ -239,6 +241,8 @@ fn run() -> Result<(), String> {
         trackers: activity::Trackers::default(),
         dialog_hotkeys_suspended: false,
         chatlog_warned: false,
+        region: None,
+        confirm_keys: None,
     };
     app.tray = tray::Tray::spawn(app.tray_state());
     queue.roundtrip(&mut app).map_err(|e| format!("roundtrip: {e}"))?;
@@ -383,6 +387,10 @@ struct App {
     dialog_hotkeys_suspended: bool,
     /// The "logs not found" warning was logged (once per run).
     chatlog_warned: bool,
+    /// The settings dialog's region selection overlay, while it's up.
+    region: Option<region_select::RegionSelect>,
+    /// Which keys are Enter and Escape in the seat's current keymap (None until it arrives or if it can't be read).
+    confirm_keys: Option<keymap::ConfirmKeys>,
 }
 
 fn timerfd(interval_ms: u64) -> i32 {
@@ -497,6 +505,7 @@ impl App {
             }
             if fds[3].revents & libc::POLLIN != 0 || self.exit_requested {
                 SLOG.info(format_args!("Shutting down"));
+                self.cancel_region_select();
                 self.unregister_hotkeys();
                 self.chatlog = None;
                 if let Some(t) = self.tray.take() {
@@ -533,6 +542,7 @@ impl App {
         if self.tick % 20 == 5 {
             self.check_profile_reload();
         }
+        self.region_select_tick();
         self.expire_notifications();
         self.apply_hide_when_no_eve_focus();
         self.check_auto_minimize();
@@ -895,10 +905,11 @@ impl App {
     /// The Windows render_thumbnail: resolve the look, show/hide, repaint the overlay only when it changed.
     fn render_thumb(&mut self, i: usize) {
         let state = self.effective_state(&self.thumbs[i]);
+        let hidden_for_region = self.region.as_ref().is_some_and(|r| r.hides_thumbnails());
         let t = &self.thumbs[i];
         let view = ThumbnailView {
             state,
-            is_visible: t.visibility.is_visible(),
+            is_visible: t.visibility.is_visible() && !hidden_for_region,
             is_focused: self.active == Some(t.window),
             character_name: &t.name,
             system_name: &t.system_name,
@@ -1237,6 +1248,9 @@ impl Dispatch<WlSurface, u64> for App {
 
 impl Dispatch<WlCallback, u64> for App {
     fn event(state: &mut Self, _: &WlCallback, _: <WlCallback as Proxy>::Event, id: &u64, _: &Connection, _: &QueueHandle<Self>) {
+        if *id >= region_select::SURFACE_ID_BASE {
+            return state.region_frame_done(*id);
+        }
         let Some(i) = state.thumb_index(*id) else { return };
         if let Some(s) = state.thumbs[i].surf.as_mut() {
             s.frame_pending = false;
@@ -1247,6 +1261,9 @@ impl Dispatch<WlCallback, u64> for App {
 
 impl Dispatch<ZwlrLayerSurfaceV1, u64> for App {
     fn event(state: &mut Self, layer: &ZwlrLayerSurfaceV1, event: zwlr_layer_surface_v1::Event, id: &u64, _: &Connection, _: &QueueHandle<Self>) {
+        if *id >= region_select::SURFACE_ID_BASE {
+            return state.region_layer_event(*id, event);
+        }
         let Some(i) = state.thumb_index(*id) else { return };
         match event {
             zwlr_layer_surface_v1::Event::Configure { serial, width, height } => {
@@ -1303,10 +1320,18 @@ impl Dispatch<WlSeat, ()> for App {
 
 impl Dispatch<WlKeyboard, ()> for App {
     fn event(state: &mut Self, _: &WlKeyboard, event: wayland_client::protocol::wl_keyboard::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
-        // xkb's standard modifier bits: Shift = 0x1, Control = 0x4.
-        if let wayland_client::protocol::wl_keyboard::Event::Modifiers { mods_depressed, .. } = event {
-            state.ctrl = mods_depressed & 0x4 != 0;
-            state.shift = mods_depressed & 0x1 != 0;
+        use wayland_client::protocol::wl_keyboard::{Event, KeyState};
+        match event {
+            // xkb's standard modifier bits: Shift = 0x1, Control = 0x4.
+            Event::Modifiers { mods_depressed, .. } => {
+                state.ctrl = mods_depressed & 0x4 != 0;
+                state.shift = mods_depressed & 0x1 != 0;
+            }
+            Event::Keymap { format: WEnum::Value(wayland_client::protocol::wl_keyboard::KeymapFormat::XkbV1), fd, size } => {
+                state.confirm_keys = keymap::read_keymap(&fd, size);
+            }
+            Event::Key { key, state: WEnum::Value(KeyState::Pressed), .. } if state.region.is_some() => state.region_key(key),
+            _ => {}
         }
     }
 }
@@ -1314,6 +1339,9 @@ impl Dispatch<WlKeyboard, ()> for App {
 impl Dispatch<WlPointer, ()> for App {
     fn event(state: &mut Self, _: &WlPointer, event: wayland_client::protocol::wl_pointer::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
         use wayland_client::protocol::wl_pointer::{ButtonState, Event};
+        if state.region.is_some() {
+            return state.region_pointer(event);
+        }
         match event {
             Event::Enter { serial, surface, surface_x, surface_y } => {
                 state.pointer_state.hover = surface.data::<u64>().copied();

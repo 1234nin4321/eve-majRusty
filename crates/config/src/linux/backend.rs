@@ -10,7 +10,7 @@ use std::sync::mpsc;
 use eve_maj_core::config::{self, clamp_profile_name, parse_hex_color, profile_path, Config, GlobalSettings, Position, DEFAULT_ORE_TABLE, PROFILES_DIR};
 use eve_maj_core::display_info::{self, Display};
 use eve_maj_core::log::Scope;
-use eve_maj_core::protocol::{Command, WireMessage};
+use eve_maj_core::protocol::{region_select_result_path, Command, RegionSelectRequest, RegionSelectResult, WireMessage};
 use eve_maj_core::{esi_prices, eve_accounts, ultra_potato};
 use serde_json::{json, Value};
 use tao::event_loop::EventLoopProxy;
@@ -578,8 +578,26 @@ impl Handler for Backend {
                 send_command(&Command::DialogResumeHotkeys);
                 ok()
             }
-            "startRegionSelect" => fail("Region selection isn't available on Linux yet"),
-            "pollRegionSelectResult" => json!({ "done": true, "cancelled": true }).to_string(),
+            "startRegionSelect" => {
+                // The app draws the overlay and leaves the outcome in a file; clear any stale one first.
+                let _ = std::fs::remove_file(region_select_result_path());
+                let request = RegionSelectRequest::from_dialog_json(&a0);
+                if send_command(&Command::StartRegionSelect(Box::new(request))) {
+                    ok()
+                } else {
+                    fail("EVE-Maj Preview isn't running")
+                }
+            }
+            "pollRegionSelectResult" => {
+                let path = region_select_result_path();
+                match std::fs::read_to_string(&path) {
+                    Ok(text) => {
+                        let _ = std::fs::remove_file(&path);
+                        RegionSelectResult::from_file_json(&text).unwrap_or_else(RegionSelectResult::cancelled).to_dialog_json()
+                    }
+                    Err(_) => json!({ "done": false }).to_string(),
+                }
+            }
 
             // Desktop integration.
             "browseChatlogDir" => self.browse(Browse::ChatlogDir),

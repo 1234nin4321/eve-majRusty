@@ -330,6 +330,90 @@ impl From<RegionSelectResultWire> for RegionSelectResult {
     }
 }
 
+/// Smallest region side (logical pixels) a selection may confirm; smaller ones report TooSmall.
+pub const REGION_SELECT_MIN_SIZE: i32 = 32;
+
+impl RegionSelectRequest {
+    /// The settings dialog's `startRegionSelect` argument: `{"hide": bool, "region": [x, y, w, h] | null,
+    /// "labels": {"save", "cancel", "hintNew", "hintEdit", "hintConfirm"}}`. Missing or malformed parts fall back to
+    /// the defaults (a fresh drag with English text); a region needs a positive width and height.
+    pub fn from_dialog_json(json: &str) -> Self {
+        let v: serde_json::Value = serde_json::from_str(json).unwrap_or_default();
+        let edit_region = v["region"].as_array().and_then(|a| {
+            let n: Vec<i32> = a.iter().filter_map(|x| x.as_i64()).filter_map(|x| i32::try_from(x).ok()).collect();
+            match n[..] {
+                [x, y, w, h] if a.len() == 4 && w > 0 && h > 0 => Some(Rect { left: x, top: y, right: x.saturating_add(w), bottom: y.saturating_add(h) }),
+                _ => None,
+            }
+        });
+        let mut labels = RegionSelectLabels::default();
+        let l = &v["labels"];
+        let text = |key: &str| l[key].as_str().filter(|s| !s.trim().is_empty());
+        if let Some(t) = text("save") {
+            labels.save = fixed_text(t);
+        }
+        if let Some(t) = text("cancel") {
+            labels.cancel = fixed_text(t);
+        }
+        if let Some(t) = text("hintNew") {
+            labels.hint_new = fixed_text(t);
+        }
+        if let Some(t) = text("hintEdit") {
+            labels.hint_edit = fixed_text(t);
+        }
+        if let Some(t) = text("hintConfirm") {
+            labels.hint_confirm = fixed_text(t);
+        }
+        Self { hide_thumbnails: v["hide"].as_bool().unwrap_or(false), edit_region, labels }
+    }
+}
+
+impl RegionSelectResult {
+    /// The outcome of confirming `rect` (Success, or TooSmall below REGION_SELECT_MIN_SIZE).
+    pub fn confirmed(rect: Rect) -> Self {
+        let status = if rect.width() < REGION_SELECT_MIN_SIZE || rect.height() < REGION_SELECT_MIN_SIZE { RegionSelectStatus::TooSmall } else { RegionSelectStatus::Success };
+        Self { sequence: 0, status, x: rect.left, y: rect.top, width: rect.width(), height: rect.height() }
+    }
+
+    pub fn cancelled() -> Self {
+        Self { status: RegionSelectStatus::Cancelled, ..Self::default() }
+    }
+
+    /// The settings dialog's `pollRegionSelectResult` reply for this finished selection.
+    pub fn to_dialog_json(&self) -> String {
+        match self.status {
+            RegionSelectStatus::Success => serde_json::json!({ "done": true, "cancelled": false, "x": self.x, "y": self.y, "width": self.width, "height": self.height }),
+            RegionSelectStatus::TooSmall => serde_json::json!({ "done": true, "cancelled": true, "tooSmall": true }),
+            RegionSelectStatus::Cancelled | RegionSelectStatus::None => serde_json::json!({ "done": true, "cancelled": true }),
+        }
+        .to_string()
+    }
+
+    /// The result file's contents (Linux, where the app hands the result back through a file instead of a mapping).
+    pub fn to_file_json(&self) -> String {
+        serde_json::json!({ "status": self.status as u32, "x": self.x, "y": self.y, "width": self.width, "height": self.height }).to_string()
+    }
+
+    pub fn from_file_json(json: &str) -> Option<Self> {
+        let v: serde_json::Value = serde_json::from_str(json).ok()?;
+        let int = |k: &str| v[k].as_i64().and_then(|x| i32::try_from(x).ok());
+        Some(Self {
+            sequence: 0,
+            status: RegionSelectStatus::from_u32(u32::try_from(v["status"].as_u64()?).ok()?),
+            x: int("x")?,
+            y: int("y")?,
+            width: int("width")?,
+            height: int("height")?,
+        })
+    }
+}
+
+/// Where the Linux app leaves a finished selection for the settings window to pick up: one file per user session.
+pub fn region_select_result_path() -> std::path::PathBuf {
+    let dir = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()).map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    dir.join("eve-maj-region-select.json")
+}
+
 impl RegionSelectResultWire {
     /// The next result after `self`: sequence incremented (wrapping), status and rect replaced.
     pub fn next(self, status: RegionSelectStatus, rect: Rect) -> Self {
@@ -468,6 +552,35 @@ where
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn region_select_request_from_dialog_json() {
+        let r = RegionSelectRequest::from_dialog_json(r#"{"hide":true,"region":[10,20,300,200],"labels":{"save":"Speichern","cancel":"","hintNew":"neu"}}"#);
+        assert!(r.hide_thumbnails);
+        assert_eq!(r.edit_region, Some(Rect { left: 10, top: 20, right: 310, bottom: 220 }));
+        assert_eq!(label_text(&r.labels.save), "Speichern".as_bytes());
+        assert_eq!(label_text(&r.labels.cancel), b"Cancel");
+        assert_eq!(label_text(&r.labels.hint_new), b"neu");
+        let fresh = RegionSelectRequest::from_dialog_json(r#"{"hide":false,"region":null}"#);
+        assert_eq!(fresh, RegionSelectRequest::default());
+        assert_eq!(RegionSelectRequest::from_dialog_json(r#"{"region":[1,2,0,5]}"#).edit_region, None);
+        assert_eq!(RegionSelectRequest::from_dialog_json(r#"{"region":[1,2,3]}"#).edit_region, None);
+        assert_eq!(RegionSelectRequest::from_dialog_json("not json"), RegionSelectRequest::default());
+    }
+
+    #[test]
+    fn region_select_result_round_trips_and_replies() {
+        let ok = RegionSelectResult::confirmed(Rect { left: -100, top: 50, right: 400, bottom: 350 });
+        assert_eq!(ok.status, RegionSelectStatus::Success);
+        assert_eq!(RegionSelectResult::from_file_json(&ok.to_file_json()), Some(ok));
+        let v: serde_json::Value = serde_json::from_str(&ok.to_dialog_json()).unwrap();
+        assert_eq!((v["done"].as_bool(), v["cancelled"].as_bool(), v["x"].as_i64(), v["width"].as_i64()), (Some(true), Some(false), Some(-100), Some(500)));
+        let small = RegionSelectResult::confirmed(Rect { left: 0, top: 0, right: 500, bottom: REGION_SELECT_MIN_SIZE - 1 });
+        assert_eq!(small.status, RegionSelectStatus::TooSmall);
+        assert!(small.to_dialog_json().contains("\"tooSmall\":true"));
+        assert!(RegionSelectResult::cancelled().to_dialog_json().contains("\"cancelled\":true"));
+        assert_eq!(RegionSelectResult::from_file_json("{}"), None);
+    }
+
     use super::*;
 
     #[test]
