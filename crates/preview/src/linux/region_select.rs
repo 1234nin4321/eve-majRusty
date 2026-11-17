@@ -264,6 +264,8 @@ fn rounded(cr: &cairo::Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
 impl App {
     /// The dialog's "Drag Select Region": covers every monitor with the selection overlay.
     pub(super) fn start_region_select(&mut self, request: RegionSelectRequest) {
+        // The overlay takes all pointer input, so a panel drag in progress would never see its release.
+        self.end_panel_drag();
         if self.region.is_some() {
             // No result for the old one: the dialog already cleared the result file for this request.
             SLOG.info(format_args!("Region selection restarted"));
@@ -298,9 +300,9 @@ impl App {
         };
         for (n, monitor) in self.monitors.iter().enumerate() {
             let id = SURFACE_ID_BASE + n as u64;
-            let output = self.outputs.iter().find(|o| o.name == monitor.name).map(|o| o.wl.clone());
+            let Some(output) = self.outputs.iter().find(|o| o.name == monitor.name).map(|o| o.wl.clone()) else { continue };
             let wl = self.compositor.create_surface(&self.qh, id);
-            let layer = self.layer_shell.get_layer_surface(&wl, output.as_ref(), zwlr_layer_shell_v1::Layer::Overlay, NAMESPACE.to_owned(), &self.qh, id);
+            let layer = self.layer_shell.get_layer_surface(&wl, Some(&output), zwlr_layer_shell_v1::Layer::Overlay, NAMESPACE.to_owned(), &self.qh, id);
             use zwlr_layer_surface_v1::Anchor;
             layer.set_anchor(Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right);
             layer.set_size(0, 0);

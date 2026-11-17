@@ -5563,7 +5563,11 @@ async function checkForUpdatesNow() {
         }
         if (details) details.style.display = '';
 
-        if (!data.assetName) {
+        if (data.manual) {
+            // Linux: the release is linked above; it's installed by rebuilding or through a package, not from here.
+            setUpdateStatusText(t('update.status.available').replace('{current}', data.currentVersion), 'info');
+            setUpdateButtons();
+        } else if (!data.assetName) {
             setUpdateStatusText(t('update.status.noAsset').replace('{current}', data.currentVersion), 'error');
             setUpdateButtons();
         } else if (data.staged) {

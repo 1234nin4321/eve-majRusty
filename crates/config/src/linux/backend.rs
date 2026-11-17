@@ -11,7 +11,7 @@ use eve_maj_core::config::{self, clamp_profile_name, parse_hex_color, profile_pa
 use eve_maj_core::display_info::{self, Display};
 use eve_maj_core::log::Scope;
 use eve_maj_core::protocol::{region_select_result_path, Command, RegionSelectRequest, RegionSelectResult, WireMessage};
-use eve_maj_core::{esi_prices, eve_accounts, ultra_potato};
+use eve_maj_core::{esi_prices, eve_accounts, ultra_potato, update};
 use serde_json::{json, Value};
 use tao::event_loop::EventLoopProxy;
 
@@ -76,9 +76,39 @@ const LANGS: &[(&str, &str, &str)] = &[
     ("pl", "Polski", include_str!("../../ui/lang/pl.json")),
 ];
 
+/// English hints that describe Windows behaviour, reworded for what the Linux build does. Other languages keep the
+/// shared wording until they're translated.
+const LINUX_EN_HINTS: &[(&str, &str)] = &[
+    ("tab.notifications.section.text-to-speech.hint", "Speak alerts aloud through speech-dispatcher (spd-say) or espeak-ng. Enable individual event types below under each event's \"TTS\" setting."),
+    ("tab.behavior.section.startup.hint", "Launch at login (an XDG autostart entry), and register the evemajpreview:// URL protocol for external control (Stream Deck, scripts, etc.)."),
+    ("tab.displays.section.displays.hint", "Every display connected to this PC, arranged the way Hyprland lays them out, with the resolution, refresh rate and scaling each one is running. View only: EVE-Maj Preview never changes your display settings. Click a display to highlight its details, or use Identify to show each display's number on screen."),
+    ("tab.resources.section.resource-usage-overlay.hint", "Displays each client's CPU% and RAM usage on its thumbnail, read from /proc rather than from EVE's logs. VRAM isn't available on Linux."),
+    ("field.hotkeyToggleExclusion.hint", "Applies to whichever EVE window currently has focus, not the thumbnail under your cursor."),
+    ("field.regionDisplayUseWorkArea.label", "Leave Room for Bars"),
+    ("field.regionDisplayUseWorkArea.hint", "Fills the display's work area so thumbnails don't sit under Waybar or other bars that reserve space."),
+    ("tab.accounts.section.characters.hint", "Every character that has logged in on this PC, found in EVE's settings folders (CCP/EVE under the client's Wine prefix, drive_c/users/*/AppData/Local). Accounts are suggested by matching each character's settings file to the account settings file EVE saved at the same moment, so check a suggestion before accepting it. Changes save automatically."),
+];
+
+/// A language's catalog JSON, with the Linux rewording applied to English.
+fn catalog_json(code: &str, catalog: &str) -> String {
+    if code != "en" {
+        return catalog.to_owned();
+    }
+    let Ok(Value::Object(mut map)) = serde_json::from_str::<Value>(catalog) else { return catalog.to_owned() };
+    for (key, text) in LINUX_EN_HINTS {
+        if map.contains_key(*key) {
+            map.insert((*key).to_owned(), Value::String((*text).to_owned()));
+        } else {
+            SLOG.warn(format_args!("Linux wording for a missing translation key: {key}"));
+        }
+    }
+    Value::Object(map).to_string()
+}
+
 /// The page with styles, script, fonts, images and translations inlined, as the Zig build's injectResources does.
 fn assemble_page(language: &str) -> Vec<u8> {
     let (lang, _, catalog) = LANGS.iter().find(|(code, _, _)| *code == language).unwrap_or(&LANGS[0]);
+    let catalog = catalog_json(lang, catalog);
     let mut html = include_str!("../../ui/config_dialog.html").to_owned();
     let replace = |html: &mut String, needle: &str, with: &str| {
         if html.contains(needle) {
@@ -108,7 +138,7 @@ fn assemble_page(language: &str) -> Vec<u8> {
         "window.__I18N_LANGS__ = {}; /* Language list will be injected here by WebUI */",
         &format!("window.__I18N_LANGS__ = {};", Value::Object(names)),
     );
-    let all = LANGS.iter().map(|(c, _, cat)| format!("\"{c}\":{cat}")).collect::<Vec<_>>().join(",");
+    let all = LANGS.iter().map(|(c, _, cat)| format!("\"{c}\":{}", catalog_json(c, cat))).collect::<Vec<_>>().join(",");
     replace(&mut html, "window.__I18N_ALL__ = {}; /* All translations will be injected here by WebUI */", &format!("window.__I18N_ALL__ = {{{all}}};"));
     replace(&mut html, "<html lang=\"en\" class=\"pre-init\">", &format!("<html lang=\"{lang}\" class=\"pre-init\">"));
     html.into_bytes()
@@ -231,6 +261,77 @@ fn displays() -> String {
         .collect();
     displays.sort_by_key(|d| d.number);
     display_info::displays_json(&displays)
+}
+
+/// The startup notice's status. The dialog only asks when update checks are enabled, so the first ask starts the
+/// background check (it asks again a few seconds later if nothing was known yet).
+fn update_status() -> String {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        if let Err(e) = std::thread::Builder::new().name("update_check".into()).spawn(update::UpdateChecker::check_for_updates_background) {
+            SLOG.warn(format_args!("Failed to start update check thread: {e}"));
+        }
+    });
+    let s = &update::UPDATE_STATUS;
+    json!({ "available": s.is_available(), "version": s.version(), "url": s.url(), "notes": s.notes() }).to_string()
+}
+
+/// The Updates tab's check: whether GitHub has a newer release, with `manual` set so the tab links to it instead of
+/// offering the Windows zip.
+fn check_for_update_now() -> String {
+    match update::UpdateChecker::new().check_for_updates() {
+        Ok(None) => json!({ "success": true, "available": false, "currentVersion": update::CURRENT_VERSION }).to_string(),
+        Ok(Some(info)) => {
+            update::UPDATE_STATUS.set(&info.version, &info.url, info.notes.as_deref());
+            json!({
+                "success": true, "available": true, "manual": true, "currentVersion": update::CURRENT_VERSION,
+                "version": info.version, "url": info.url, "notes": info.notes,
+                "assetName": null, "assetSize": 0, "hasDigest": false, "staged": false,
+            })
+            .to_string()
+        }
+        Err(e) => {
+            SLOG.warn(format_args!("Manual update check failed: {e}"));
+            json!({ "success": false, "error": "check_failed" }).to_string()
+        }
+    }
+}
+
+/// Shows each monitor's number (the ones getDisplays lists) for a few seconds, through the preview binary's
+/// `--identify-displays` helper; a click while it's still up is ignored, like the Windows build.
+fn identify_displays() -> bool {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static RUNNING: AtomicBool = AtomicBool::new(false);
+    if RUNNING.swap(true, Ordering::AcqRel) {
+        return true;
+    }
+    let targets: Vec<String> = match hyprctl_json("monitors") {
+        Some(Value::Array(list)) => list.iter().filter_map(|m| Some(format!("{}={}", m["name"].as_str()?, m["id"].as_i64()? + 1))).collect(),
+        _ => Vec::new(),
+    };
+    // Next to this binary, else on PATH (as the preview app finds this one).
+    let sibling = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("eve-maj-preview"))).filter(|p| p.is_file());
+    let exe = sibling.unwrap_or_else(|| PathBuf::from("eve-maj-preview"));
+    let child = if targets.is_empty() {
+        Err(std::io::Error::other("hyprctl listed no monitors"))
+    } else {
+        std::process::Command::new(&exe).arg("--identify-displays").args(&targets).stdin(std::process::Stdio::null()).spawn()
+    };
+    match child {
+        // Waited on from its own thread, so it's reaped as soon as it exits and the next click can show it again.
+        Ok(mut child) => {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+                RUNNING.store(false, Ordering::Release);
+            });
+            true
+        }
+        Err(e) => {
+            SLOG.warn(format_args!("Couldn't start {}: {e}", exe.display()));
+            RUNNING.store(false, Ordering::Release);
+            false
+        }
+    }
 }
 
 /// Points LOCALAPPDATA at the running EVE client's Wine prefix (WINEPREFIX or Proton's STEAM_COMPAT_DATA_PATH/pfx),
@@ -488,6 +589,11 @@ impl Backend {
 }
 
 impl Handler for Backend {
+    fn call_without_state(name: &str) -> Option<String> {
+        // A GitHub request can take a while when offline; it mustn't block saves and status polls meanwhile.
+        (name == "checkForUpdateNow").then(check_for_update_now)
+    }
+
     fn asset(&self, path: &str) -> Option<Asset> {
         match path {
             "/" | "/index.html" => Some(Asset { content_type: "text/html; charset=utf-8", body: self.page.clone() }),
@@ -557,7 +663,7 @@ impl Handler for Backend {
             "getOpenClients" => Value::Array(eve_clients().into_iter().map(|c| Value::String(c.0)).collect()).to_string(),
             "getRunningWindows" => running_windows(),
             "getDisplays" => displays(),
-            "identifyDisplays" => json!({ "success": false }).to_string(),
+            "identifyDisplays" => json!({ "success": identify_displays() }).to_string(),
 
             // Live: the running preview app.
             "getMainAppStatus" => json!({ "running": main_app_running() }).to_string(),
@@ -619,9 +725,10 @@ impl Handler for Backend {
                 String::new()
             }
 
-            // Updates come from the package/build on Linux.
-            "getUpdateStatus" => json!({ "available": false }).to_string(),
-            "checkForUpdateNow" | "downloadUpdate" | "installUpdate" => fail("unsupported"),
+            // Updates: GitHub is checked and the release linked, but releases ship a Windows zip, so the
+            // download/install half stays Windows-only; a Linux build is updated by rebuilding or its package.
+            "getUpdateStatus" => update_status(),
+            "downloadUpdate" | "installUpdate" => fail("unsupported"),
 
             // EVE files and network.
             "loadAccounts" => eve_accounts::load_accounts(),
@@ -646,5 +753,22 @@ impl Handler for Backend {
                 String::new()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn linux_wording_replaces_existing_english_keys_only() {
+        let en: Value = serde_json::from_str(LANGS[0].2).unwrap();
+        for (key, _) in LINUX_EN_HINTS {
+            assert!(en.get(*key).is_some(), "en.json no longer has {key}");
+        }
+        let patched: Value = serde_json::from_str(&catalog_json("en", LANGS[0].2)).unwrap();
+        assert_eq!(patched["field.regionDisplayUseWorkArea.label"], "Leave Room for Bars");
+        assert!(!patched["tab.notifications.section.text-to-speech.hint"].as_str().unwrap().contains("Windows"));
+        assert_eq!(catalog_json("de", LANGS[1].2), LANGS[1].2);
     }
 }

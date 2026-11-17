@@ -23,6 +23,14 @@ pub trait Handler: Send + 'static {
     fn asset(&self, path: &str) -> Option<Asset>;
     /// The reply to `webui.call(name, ...args)`.
     fn call(&mut self, name: &str, args: Vec<serde_json::Value>) -> String;
+    /// The reply to a call that needs no handler state, answered without taking the handler's lock so a slow one
+    /// (a network request) doesn't hold up every other call; None for calls `call` handles.
+    fn call_without_state(_name: &str) -> Option<String>
+    where
+        Self: Sized,
+    {
+        None
+    }
 }
 
 pub struct Server {
@@ -77,7 +85,7 @@ fn respond(stream: &mut TcpStream, status: &str, content_type: &str, body: &[u8]
     stream.flush()
 }
 
-fn serve(mut stream: TcpStream, port: u16, token: &str, handler: &Mutex<impl Handler>) -> std::io::Result<()> {
+fn serve<H: Handler>(mut stream: TcpStream, port: u16, token: &str, handler: &Mutex<H>) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
     reader.read_line(&mut request_line)?;
@@ -123,7 +131,10 @@ fn serve(mut stream: TcpStream, port: u16, token: &str, handler: &Mutex<impl Han
             reader.read_exact(&mut body)?;
             let args: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap_or_default();
             let name = &path["/call/".len()..];
-            let reply = handler.lock().unwrap_or_else(|p| p.into_inner()).call(name, args);
+            let reply = match H::call_without_state(name) {
+                Some(reply) => reply,
+                None => handler.lock().unwrap_or_else(|p| p.into_inner()).call(name, args),
+            };
             respond(&mut stream, "200 OK", "text/plain; charset=utf-8", reply.as_bytes())
         }
         _ => respond(&mut stream, "405 Method Not Allowed", "text/plain", b"method not allowed"),

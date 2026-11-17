@@ -17,6 +17,7 @@ mod capture;
 mod control;
 mod dialog;
 mod gpu;
+mod identify;
 mod ipc;
 mod keymap;
 mod notify;
@@ -62,6 +63,15 @@ const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 
 pub fn main() {
+    // The settings window's Identify Displays: a short-lived helper, independent of any running instance.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some(identify::FLAG) {
+        if let Err(e) = identify::run(&args[1..]) {
+            eprintln!("eve-maj-preview: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if let Err(e) = run() {
         SLOG.err(format_args!("Fatal: {e}"));
         eprintln!("eve-maj-preview: {e}");
@@ -185,7 +195,7 @@ fn run() -> Result<(), String> {
     let outputs: Vec<OutputInfo> = globals.contents().with_list(|list| {
         list.iter()
             .filter(|g| g.interface == WlOutput::interface().name && g.version >= 4)
-            .map(|g| OutputInfo { wl: globals.registry().bind(g.name, 4, &qh, ()), name: String::new() })
+            .map(|g| OutputInfo { wl: globals.registry().bind(g.name, 4, &qh, ()), name: String::new(), global: g.name })
             .collect()
     });
 
@@ -260,7 +270,10 @@ fn profile_mtime(name: &str) -> Option<std::time::SystemTime> {
 
 struct OutputInfo {
     wl: WlOutput,
+    /// The connector name ("DP-1"); empty until the compositor sends it.
     name: String,
+    /// The registry name, to drop the output when its monitor is unplugged.
+    global: u32,
 }
 
 // ------------------------------------------------------------------------------------------- per-thumbnail state --
@@ -540,7 +553,7 @@ impl App {
     fn on_tick(&mut self) {
         self.tick += 1;
         // Event-driven rescans, plus a periodic safety rescan like the Windows build's full EnumWindows every ~20 ticks.
-        if self.scan_needed || self.tick % 20 == 0 {
+        if self.scan_needed || self.tick.is_multiple_of(20) {
             self.scan_needed = false;
             self.sync_windows();
         }
@@ -555,7 +568,7 @@ impl App {
         self.check_travel_left_behind();
         self.update_activity();
         self.render_dirty();
-        if self.tick % 5 == 0 {
+        if self.tick.is_multiple_of(5) {
             self.refresh_tray();
         }
     }
@@ -1015,10 +1028,11 @@ impl App {
             SLOG.warn(format_args!("No monitor to show {} on", self.thumbs[i].name));
             return;
         };
-        let output = self.outputs.iter().find(|o| o.name == monitor.name).map(|o| o.wl.clone());
+        // A monitor Hyprland lists before its wl_output (and name) has arrived: try again on a later render.
+        let Some(output) = self.outputs.iter().find(|o| o.name == monitor.name).map(|o| o.wl.clone()) else { return };
         let id = self.thumbs[i].id;
         let wl = self.compositor.create_surface(&self.qh, id);
-        let layer = self.layer_shell.get_layer_surface(&wl, output.as_ref(), zwlr_layer_shell_v1::Layer::Overlay, LAYER_NAMESPACE.to_owned(), &self.qh, id);
+        let layer = self.layer_shell.get_layer_surface(&wl, Some(&output), zwlr_layer_shell_v1::Layer::Overlay, LAYER_NAMESPACE.to_owned(), &self.qh, id);
         layer.set_size(rect.width.max(1) as u32, rect.height.max(1) as u32);
         layer.set_anchor(zwlr_layer_surface_v1::Anchor::Top | zwlr_layer_surface_v1::Anchor::Left);
         layer.set_margin(rect.y - monitor.bounds.top, 0, 0, rect.x - monitor.bounds.left);
@@ -1235,8 +1249,25 @@ delegate_noop!(App: ignore HyprlandToplevelExportManagerV1);
 delegate_noop!(App: ignore WpCursorShapeManagerV1);
 delegate_noop!(App: ignore WpCursorShapeDeviceV1);
 
+/// Keeps `outputs` in step with monitors plugged in or out after startup, so surfaces are always created on a live
+/// wl_output (a stale one from before a re-plug would put them on the wrong monitor, or get them closed).
 impl Dispatch<WlRegistry, GlobalListContents> for App {
-    fn event(_: &mut Self, _: &WlRegistry, _: <WlRegistry as Proxy>::Event, _: &GlobalListContents, _: &Connection, _: &QueueHandle<Self>) {}
+    fn event(state: &mut Self, registry: &WlRegistry, event: <WlRegistry as Proxy>::Event, _: &GlobalListContents, _: &Connection, qh: &QueueHandle<Self>) {
+        use wayland_client::protocol::wl_registry::Event;
+        match event {
+            Event::Global { name, interface, version } if interface == WlOutput::interface().name && version >= 4 => {
+                state.outputs.push(OutputInfo { wl: registry.bind(name, 4, qh, ()), name: String::new(), global: name });
+            }
+            Event::GlobalRemove { name } => {
+                if let Some(i) = state.outputs.iter().position(|o| o.global == name) {
+                    let o = state.outputs.remove(i);
+                    SLOG.info(format_args!("Output {} removed", o.name));
+                    o.wl.release();
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 impl Dispatch<WlOutput, ()> for App {
@@ -1244,6 +1275,10 @@ impl Dispatch<WlOutput, ()> for App {
         if let wayland_client::protocol::wl_output::Event::Name { name } = event {
             if let Some(o) = state.outputs.iter_mut().find(|o| &o.wl == output) {
                 o.name = name;
+                // Thumbnails that waited for this monitor's output can be placed now.
+                for t in state.thumbs.iter_mut().filter(|t| t.surf.is_none()) {
+                    t.needs_render = true;
+                }
             }
         }
     }
@@ -1357,6 +1392,11 @@ impl Dispatch<WlPointer, ()> for App {
         }
         match event {
             Event::Enter { serial, surface, surface_x, surface_y } => {
+                // The button is held through a whole drag (an implicit grab), so entering another surface means the
+                // release happened elsewhere: drop the panel where it is rather than drag it on with no button down.
+                if state.panels.dragging() && state.panels.dragged_id() != surface.data::<u64>().copied() {
+                    state.end_panel_drag();
+                }
                 state.pointer_state.hover = surface.data::<u64>().copied();
                 state.pointer_state.local = (surface_x, surface_y);
                 state.pointer_state.enter_serial = serial;

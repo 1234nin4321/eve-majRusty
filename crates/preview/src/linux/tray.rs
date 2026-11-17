@@ -192,7 +192,7 @@ fn decode_icon() -> Option<ksni::Icon> {
     let pixels = d.get(off + header_len..off + header_len + width * height * 4)?;
     let mut data = Vec::with_capacity(width * height * 4);
     for row in (0..height).rev() {
-        for px in pixels[row * width * 4..(row + 1) * width * 4].chunks_exact(4) {
+        for px in pixels[row * width * 4..(row + 1) * width * 4].as_chunks::<4>().0 {
             data.extend_from_slice(&[px[3], px[2], px[1], px[0]]);
         }
     }

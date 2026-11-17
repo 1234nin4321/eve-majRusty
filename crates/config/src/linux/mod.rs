@@ -90,7 +90,7 @@ pub fn run() -> Result<(), String> {
     let _webview = WebViewBuilder::new()
         .with_url(&url)
         // The shim reads the call token from here; it never appears in a URL or a page another origin can load.
-        .with_initialization_script(&format!("window.__EVEMAJ_TOKEN__ = {};", serde_json::Value::String(token)))
+        .with_initialization_script(format!("window.__EVEMAJ_TOKEN__ = {};", serde_json::Value::String(token)))
         .with_devtools(std::env::var_os("EVE_MAJ_DEVTOOLS").is_some())
         .build_gtk(vbox)
         .map_err(|e| format!("can't create the web view: {e}"))?;

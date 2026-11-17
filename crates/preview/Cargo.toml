@@ -11,10 +11,10 @@ path = "src/main.rs"
 
 [dependencies]
 eve-maj-core = { path = "../core" }
-eve-maj-app = { path = "../app" }
 serde_json = { version = "1", features = ["preserve_order"] }
 
 [target.'cfg(windows)'.dependencies]
+eve-maj-app = { path = "../app" }
 eve-maj-win = { path = "../win" }
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",

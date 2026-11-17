@@ -11,8 +11,8 @@ existing install's settings carry over.
 >   `config.exe` are not yet.
 > - **Linux (Hyprland):** thumbnails, layouts, hotkeys and groups, minimize/close all, auto-move, tray, `evemajpreview://`
 >   links, chat-log monitoring (system names, notifications, sounds, Travel Mode) and the activity overlays (DPS,
->   mining, bounty, CPU/RAM), the Client List view and History Panel, and the settings window with its region selection
-  work. See [Linux (Hyprland)](#linux-hyprland).
+>   mining, bounty, CPU/RAM), the Client List view and History Panel, and the settings window (`eve-maj-config`) with
+>   region selection, Identify Displays and update checks all work. See [Linux (Hyprland)](#linux-hyprland).
 >
 > Unported settings still load and save, and log a warning when enabled.
 
@@ -23,7 +23,8 @@ existing install's settings carry over.
 | `crates/core` | Platform-independent model: config, logging, protocol URL parsing, trackers, accounts, update checks. Unit-tested on any host. |
 | `crates/win` | Thin helpers over the Win32 API (windows, monitors, clipboard, shell, file pickers). |
 | `crates/app` | Windows subsystems shared by both binaries: IPC, sound, TTS, updater, displays, mouse hook. |
-| `crates/preview` | The `eve-maj-preview.exe` binary. |
+| `crates/preview` | The `eve-maj-preview` binary: the Windows app (`src/*.rs`) and the Linux/Hyprland front end (`src/linux/`). |
+| `crates/config` | The `eve-maj-config` settings window for Linux: the shared dialog page (`ui/`) in a WebKitGTK window. |
 
 `assets/` holds the embedded Cascadia fonts and the app icon.
 
@@ -54,11 +55,21 @@ the same text/border overlay as on Windows. Layout, styling and hotkey logic com
 behave the same.
 
 ```sh
-sudo pacman -S --needed rust wayland mesa libdrm cairo pango xdg-utils wl-clipboard   # Arch; any distro with these works
+sudo pacman -S --needed rust wayland mesa libdrm cairo pango gtk3 webkit2gtk-4.1 xdg-utils wl-clipboard   # Arch; any distro with these works
 cargo linux                                                    # = build --release for x86_64-unknown-linux-gnu
 ./target/x86_64-unknown-linux-gnu/release/eve-maj-preview      # --profile NAME.json, --fps N (default 30)
-./target/x86_64-unknown-linux-gnu/release/eve-maj-config       # settings window (needs webkit2gtk-4.1); optional NAME.json
+./target/x86_64-unknown-linux-gnu/release/eve-maj-config       # settings window; optional NAME.json
 ```
+
+To install, put both binaries in the same directory, e.g. on your `PATH` (each one starts the other, looking next to
+itself first and then on `PATH`):
+
+```sh
+install -Dm755 -t ~/.local/bin target/x86_64-unknown-linux-gnu/release/eve-maj-{preview,config}
+```
+
+Start `eve-maj-preview` from your Hyprland config (`exec-once = eve-maj-preview`), or turn on Run on Startup in the
+settings window, which writes an XDG autostart entry (Hyprland runs those only through uwsm or a tool such as `dex`).
 
 - Profiles, `accounts.json` and `eve-maj.log` live in `~/.config/eve-maj/` (the Windows build keeps them next to the
   .exe). Edits to the active profile's JSON are picked up while it runs.
@@ -77,8 +88,12 @@ cargo linux                                                    # = build --relea
 - **Settings window** (`eve-maj-config`): the same settings dialog as on Windows (its HTML/CSS/JS, every tab and
   language), in a native WebKitGTK window. Open it from the tray (click the icon, or Settings…) or run it directly.
   Saving updates the running app; live preview, Test Notification, profile switching and pausing hotkeys while a key
-  is being recorded all reach the running app over its instance socket. Not yet on Linux: Identify displays and in-app
-  updates. `runOnStartup` writes an XDG autostart entry.
+  is being recorded all reach the running app over its instance socket. `runOnStartup` writes an XDG autostart entry.
+- **Identify Displays** (Display Config tab) shows each monitor's number in its top-left corner for three seconds, via
+  `eve-maj-preview --identify-displays`, so it works whether or not the app is running.
+- **Updates**: the settings window checks GitHub releases (unless update checks are disabled) and links to a newer
+  one. Releases ship the Windows zip, so downloading and installing in place is Windows-only; update a Linux build by
+  rebuilding it or through its package.
 - **Region selection** ("Drag Select Region" and editing a region in the settings window) dims every monitor: drag a
   rectangle, then drag its edges or inside to adjust; Enter or Save keeps it, Esc, right-click or Cancel drops it. The
   app hands the result back to the settings window through `$XDG_RUNTIME_DIR/eve-maj-region-select.json`.

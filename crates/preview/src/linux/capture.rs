@@ -121,7 +121,7 @@ impl App {
         }
         if t.cap.fails >= 5 {
             t.cap.fails += 1;
-            if t.cap.fails % FAIL_BACKOFF != 0 {
+            if !t.cap.fails.is_multiple_of(FAIL_BACKOFF) {
                 return;
             }
         }

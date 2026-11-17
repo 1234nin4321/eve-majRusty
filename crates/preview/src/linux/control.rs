@@ -493,7 +493,7 @@ impl App {
                 }
             }
             Ok(Command::Profile(name)) => match safe_profile_name(&name) {
-                Some(n) => self.switch_profile(&n.to_owned()),
+                Some(n) => self.switch_profile(n),
                 None => SLOG.warn(format_args!("Rejected unsafe profile name in link")),
             },
             Ok(Command::Hotkey(action)) => self.run_link_action(action),

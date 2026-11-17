@@ -142,6 +142,11 @@ impl Panels {
         }
     }
 
+    /// The surface id of the panel being dragged.
+    pub(super) fn dragged_id(&self) -> Option<u64> {
+        self.drag.as_ref().map(|d| d.kind.id())
+    }
+
     pub(super) fn dragging(&self) -> bool {
         self.drag.is_some()
     }
@@ -283,16 +288,18 @@ impl App {
         };
         let target = self.monitor_for(pos.0, pos.1).map(|m| (m.name.clone(), (m.bounds.left, m.bounds.top)));
         let Some((output_name, origin)) = target else { return };
-        let moved_monitor = self.panels.get(kind).is_some_and(|p| p.output != output_name);
+        // Another monitor, or the same one moved in the layout: margins are relative to its origin, so start over.
+        let moved_monitor = self.panels.get(kind).is_some_and(|p| p.output != output_name || p.origin != origin);
         if moved_monitor && !dragging {
             if let Some(p) = self.panels.slot(kind).take() {
                 destroy(p);
             }
         }
         if self.panels.get(kind).is_none() {
-            let output = self.outputs.iter().find(|o| o.name == output_name).map(|o| o.wl.clone());
+            // The monitor's wl_output hasn't arrived yet (just plugged in): place the panel on a later update.
+            let Some(output) = self.outputs.iter().find(|o| o.name == output_name).map(|o| o.wl.clone()) else { return };
             let wl = self.compositor.create_surface(&self.qh, kind.id());
-            let layer = self.layer_shell.get_layer_surface(&wl, output.as_ref(), zwlr_layer_shell_v1::Layer::Overlay, NAMESPACE.to_owned(), &self.qh, kind.id());
+            let layer = self.layer_shell.get_layer_surface(&wl, Some(&output), zwlr_layer_shell_v1::Layer::Overlay, NAMESPACE.to_owned(), &self.qh, kind.id());
             layer.set_anchor(zwlr_layer_surface_v1::Anchor::Top | zwlr_layer_surface_v1::Anchor::Left);
             layer.set_size(size.0 as u32, size.1 as u32);
             layer.set_margin(pos.1 - origin.1, 0, 0, pos.0 - origin.0);
@@ -323,6 +330,8 @@ impl App {
             p.size = size;
             p.layer.set_size(size.0 as u32, size.1 as u32);
             p.shown = None;
+            // Draw at the new size once the compositor has configured it.
+            p.configured = false;
             commit = true;
         }
         if p.pos != pos && !dragging {
